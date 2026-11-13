@@ -28,7 +28,7 @@ NEW = (
     "            # file creations, which several Mesa patches use. patch(1)\n"
     "            # creates them correctly; commit so the next patch applies\n"
     "            # against the updated tree.\n"
-    "            run('patch', '-p1', '-d', str(mesa), '-i', str(ROOT / patch), '--forward')\n"
+    "            run('patch', '-p1', '--fuzz=3', '-d', str(mesa), '-i', str(ROOT / patch), '--forward', '--batch')\n"
     "            run('git', '-C', mesa, 'add', '-A')\n"
     "            run('git', '-C', mesa, 'commit', '-q', '-m', 'patch ' + str(patch))"
 )

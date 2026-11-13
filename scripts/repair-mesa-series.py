@@ -25,10 +25,11 @@ PATCH = 'patches/mesa/turnip-frame-diagnostics.patch'
 
 
 def repair(path):
-    lines = path.read_text().split('\n')
-    if any(l.startswith('new file mode') for l in lines):
+    data = path.read_bytes()
+    if b'\nnew file mode' in data or data.startswith(b'new file mode'):
         return False
 
+    lines = data.decode('utf-8').split('\n')
     out = []
     inserted = 0
     for line in lines:
@@ -49,7 +50,11 @@ def repair(path):
     if not inserted:
         raise SystemExit(f'{path}: /dev/null hunk found but no diff --git header')
 
-    path.write_text('\n'.join(out))
+    # Write the patched text back as UTF-8 with LF endings. A patch file is a
+    # byte-exact format: letting Python translate newlines on Windows would make
+    # git reject every later hunk with "trailing whitespace" and
+    # "patch does not apply".
+    path.write_bytes('\n'.join(out).encode('utf-8'))
     return True
 
 

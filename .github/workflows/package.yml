@@ -123,8 +123,9 @@ jobs:
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
       - name: mesa patch fallback for macOS git
+        working-directory: device
         run: |
-          python3 scripts/patch-mesa-apply.py UniXNU/scripts/build-boot-runtime.py
+          python3 scripts/patch-mesa-apply.py ../UniXNU/scripts/build-boot-runtime.py
       - name: package
         working-directory: device
         env:

@@ -1,0 +1,29 @@
+name: diag
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - name: disk
+        run: |
+          df -h / /private/var
+          mkdir -p /tmp/t && cd /tmp/t
+          echo "=== sparse 215GiB mkfile ==="
+          mkfile -n 215g 215.img 2>&1 && ls -l 215.img && du -h 215.img
+          df -h /tmp
+          echo "=== raw truncate 215G ==="
+          truncate -s 215g big.raw 2>&1 && ls -l big.raw
+          echo "=== attach raw ==="
+          OUT=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse big.raw 2>&1)
+          echo "ATTACH=$OUT"
+          DEV=$(echo "$OUT" | grep -oE "/dev/disk[0-9]+" | head -1)
+          echo "DEV=$DEV"
+          echo "=== apfs list ==="
+          diskutil apfs list -plist > /tmp/apfs.plist 2>&1; echo "rc=$?"
+          grep -c Container /tmp/apfs.plist 2>/dev/null || true
+          echo "=== make APFS 32m seed ==="
+          hdiutil create -size 32m -layout NONE -fs APFS -volname Data -type UDTO seed.cdr 2>&1
+          ls -l seed.cdr
+          [ -n "$DEV" ] && hdiutil detach "$DEV" -force || true
+          df -h /

@@ -1,0 +1,130 @@
+name: userdata
+
+# Build userdata-root.img: the iPadOS root file system image that goes into the
+# `unixnu` partition (280 GiB, LBA 184345344..257745663 on this unit).
+#
+# `scripts/package.sh` (unixnu release) produces boot.img, payload.img,
+# kernel.macho and the manifest, but it never runs `unixnu build userdata`, so
+# the root image needs its own job. This workflow does exactly that step.
+#
+# Needs macOS: the iPadOS 27 IPSW images are AEA-encrypted and macOS provides
+# `aea`, `hdiutil` and `diskutil`. The `ipsw` tool from the blacktop tap
+# supplies the AEA keys.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile of the root image"
+        type: choice
+        options: ["27", "26", "17"]
+        default: "27"
+      init_data:
+        description: "Create a NEW Data seed as well (only with a first installation)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: userdata-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  userdata:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          path: UniXNU
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          path: uefi-sheng
+          submodules: recursive
+
+      - name: tools
+        run: |
+          brew install dtc llvm lld cmake mtools ninja bison pkgconf blacktop/tap/ipsw
+          {
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          ok=1
+          for t in clang make git ninja cmake dtc aea compression_tool ipsw hdiutil diskutil; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+
+      - name: platform seed
+        env:
+          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo 'Set the repository secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.' >&2
+            exit 1
+          fi
+
+      - name: repair the pinned Mesa series
+        # Same repair as the package run: turnip-frame-diagnostics.patch creates a
+        # header without the "new file mode"/"index" lines git needs.
+        working-directory: device
+        run: |
+          python3 scripts/repair-mesa-series.py ../UniXNU
+
+      - name: configure
+        working-directory: UniXNU
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          ./unixnu defconfig sheng_ipados27_defconfig -D ../device
+          ./unixnu fetch
+          ./unixnu status --json || true
+
+      - name: preview the window layout
+        working-directory: UniXNU
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+        run: |
+          ./unixnu build userdata --dry-run
+
+      - name: build userdata-root.img
+        working-directory: UniXNU
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+        run: |
+          ./unixnu build userdata
+
+      - name: report
+        if: always()
+        working-directory: UniXNU
+        run: |
+          echo '## userdata image' >> "$GITHUB_STEP_SUMMARY"
+          for f in out/sheng/*/*/userdata/userdata-root.json; do
+            [ -f "$f" ] || continue
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          ls -l out/sheng/*/*/userdata/ 2>/dev/null || true
+
+      - name: image
+        uses: actions/upload-artifact@v4
+        with:
+          name: userdata-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            UniXNU/out/sheng/*/*/userdata/userdata-root.img
+            UniXNU/out/sheng/*/*/userdata/userdata-root.json

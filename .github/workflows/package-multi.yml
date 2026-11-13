@@ -1,4 +1,4 @@
-name: package
+name: package-6lane
 
 # scripts/package.sh of this repository on a macOS runner, with the UniXNU and uefi-sheng
 # checkouts beside it, the layout board.toml names. The platform seed comes from the

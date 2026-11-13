@@ -153,8 +153,11 @@ jobs:
         env:
           UNIXNU_DEVICE: ${{ github.workspace }}/device
         run: |
-          python3 scripts/patch-extract-firmware.py ../UniXNU
-          python3 -c "import ast,pathlib; ast.parse((pathlib.Path('../UniXNU')/'scripts/extract-sheng-firmware.py').read_text()); print('extract-sheng-firmware.py parses after the patch')"
+          # extract-sheng-firmware.py lives in this device repository, not in the
+          # UniXNU checkout: board.toml [firmware] preflight names it as
+          # scripts/extract-sheng-firmware.py relative to the device tree.
+          python3 scripts/patch-extract-firmware.py .
+          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('scripts/extract-sheng-firmware.py').read_text()); print('extract-sheng-firmware.py parses after the patch')"
       - name: package
         id: package
         working-directory: device

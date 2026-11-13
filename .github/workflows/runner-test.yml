@@ -1,0 +1,12 @@
+name: runner-test
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - name: hello
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo RUNNER_OK

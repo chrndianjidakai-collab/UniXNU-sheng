@@ -1,29 +1,33 @@
-name: diag
+name: diag2
 on:
   workflow_dispatch:
 jobs:
   probe:
     runs-on: macos-26
     steps:
-      - name: disk
+      - name: grow
         run: |
-          df -h / /private/var
-          mkdir -p /tmp/t && cd /tmp/t
-          echo "=== sparse 215GiB mkfile ==="
-          mkfile -n 215g 215.img 2>&1 && ls -l 215.img && du -h 215.img
-          df -h /tmp
-          echo "=== raw truncate 215G ==="
-          truncate -s 215g big.raw 2>&1 && ls -l big.raw
-          echo "=== attach raw ==="
-          OUT=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse big.raw 2>&1)
-          echo "ATTACH=$OUT"
-          DEV=$(echo "$OUT" | grep -oE "/dev/disk[0-9]+" | head -1)
+          set -x
+          cd /tmp && rm -rf gt && mkdir gt && cd gt
+          # 复现 make-data-seed.py 的 32m APFS 卷
+          hdiutil create -size 32m -layout NONE -fs APFS -volname Data -type UDTO seed.cdr
+          MOUNT=/tmp/gt/mount && mkdir -p $MOUNT
+          hdiutil attach -nobrowse -owners off -mountpoint $MOUNT -plist seed.cdr > att.plist
+          DEV=$(plutil -extract system-entities.0.dev-entry raw att.plist)
           echo "DEV=$DEV"
-          echo "=== apfs list ==="
-          diskutil apfs list -plist > /tmp/apfs.plist 2>&1; echo "rc=$?"
-          grep -c Container /tmp/apfs.plist 2>/dev/null || true
-          echo "=== make APFS 32m seed ==="
-          hdiutil create -size 32m -layout NONE -fs APFS -volname Data -type UDTO seed.cdr 2>&1
-          ls -l seed.cdr
-          [ -n "$DEV" ] && hdiutil detach "$DEV" -force || true
-          df -h /
+          hdiutil detach "$DEV"
+          # 打包成 raw 再扩 (模拟 packed_ramdisk)
+          truncate -s 215g big.raw
+          OUT=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse big.raw)
+          echo "OUT=$OUT"
+          STORE=$(echo "$OUT" | grep -oE "/dev/disk[0-9]+" | head -1)
+          echo "STORE=$STORE"
+          echo "=== apfs list 全文 ==="
+          diskutil apfs list -plist > apfs.plist; echo "rc=$?"
+          plutil -p apfs.plist | head -40
+          echo "=== 找 container ==="
+          CONT=$(plutil -extract Containers.0.ContainerReference raw apfs.plist 2>&1)
+          echo "CONT=$CONT"
+          echo "=== resizeContainer 0 ==="
+          diskutil apfs resizeContainer "$CONT" 0; echo "resize_rc=$?"
+          hdiutil detach "$STORE" -force || true

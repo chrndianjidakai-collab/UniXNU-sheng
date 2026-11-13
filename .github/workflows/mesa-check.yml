@@ -1,17 +1,22 @@
 name: mesa-check
-# Verify only the Mesa patch step, the stage that stopped package #10.
+
+# Verify the Mesa patch stage only: it is the step that stopped package #10 and
+# nothing else in the pipeline is still unproven.
 #
-# The full package build spends 15-40 minutes on checkouts, tool installs, the
-# XNU kernel and the boot image. This job answers one question in a few
-# minutes: after the 23 pinned patches are applied, does the tree reconstruct
-# the pinned Mesa commit byte for byte (scripts/mesa_patch_identity.py)?
+# Deliberately runs on ubuntu-latest, not macos-26. The whole stage is plain
+# git (fetch the pinned Mesa commit, apply 17 patches, reverse-apply, byte
+# compare) and has no macOS dependency -- scripts/mesa_patch_identity.py shells
+# out to git alone. macOS arm64 hosted runners are the constrained pool that
+# cancelled package runs #4, #5, #7, #8, #9, #11 and #12 and mesa-check #1 with
+# "The job was not acquired by Runner of type hosted", so this job takes the
+# queue out of the question and answers in about two minutes.
 on:
   workflow_dispatch:
 
 jobs:
   mesa:
-    runs-on: macos-26
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,4 +35,9 @@ jobs:
       - name: apply the pinned Mesa series and validate
         working-directory: UniXNU
         run: |
+          set -x
+          git --version
+          # The pinned series ships one patch whose file-creation header is
+          # malformed; repair it before anything reads it.
+          python3 ../device/scripts/repair-mesa-series.py "$PWD"
           python3 ../device/scripts/mesa-check.py

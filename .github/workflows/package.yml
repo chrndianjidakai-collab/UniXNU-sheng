@@ -122,10 +122,14 @@ jobs:
           if not path.is_file() and os.environ['INIT_DATA'] != 'true':
               raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
           PY
-      - name: mesa patch fallback for macOS git
+      - name: repair the pinned Mesa series
+        # turnip-frame-diagnostics.patch creates a header without the
+        # "new file mode"/"index" lines git needs, so git apply aborts with
+        # "error: dev/null: No such file or directory". Repair the header only;
+        # the hunk body is untouched, so the tree still reconstructs the pin.
         working-directory: device
         run: |
-          python3 scripts/fix-mesa-patch.py ../UniXNU/scripts/build-boot-runtime.py
+          python3 scripts/repair-mesa-series.py ../UniXNU
       - name: package
         working-directory: device
         env:

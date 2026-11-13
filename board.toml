@@ -10,8 +10,13 @@
 
 
 ["userdata"]
-"first_lba" = 3094592
-"last_lba" = 64007162
+# Measured on this unit's GPT (4096-byte logical blocks). The upstream values
+# (3094592..64007162, a 232 GiB 256G-class SKU) do not match this 1 TB SKU.
+# The partition was split with scripts/dual_sys/partition.py: userdata now
+# spans 3094784..184345343 (691.416 GiB) and unixnu was created at
+# 184345344..257745663 (280.000 GiB). UniXNU owns the unixnu range.
+"first_lba" = 184345344
+"last_lba" = 257745663
 "lba_bytes" = 4096
 
 
@@ -63,7 +68,7 @@
 tool = "scripts/build-boot-runtime.py"
 target = "ios27"
 build = "24A446"
-data_gib = 215
+data_gib = 32
 skip_setup = true
 trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
 wallpapers = ["ipados27", "ipados27-floating"]

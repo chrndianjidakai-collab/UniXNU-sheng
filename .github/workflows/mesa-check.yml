@@ -1,0 +1,33 @@
+name: mesa-check
+# Verify only the Mesa patch step, the stage that stopped package #10.
+#
+# The full package build spends 15-40 minutes on checkouts, tool installs, the
+# XNU kernel and the boot image. This job answers one question in a few
+# minutes: after the 23 pinned patches are applied, does the tree reconstruct
+# the pinned Mesa commit byte for byte (scripts/mesa_patch_identity.py)?
+on:
+  workflow_dispatch:
+
+jobs:
+  mesa:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: chrndianjidakai-collab/UniXNU-sheng
+          ref: main
+          path: device
+          submodules: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9
+          path: UniXNU
+          submodules: false
+
+      - name: apply the pinned Mesa series and validate
+        working-directory: UniXNU
+        run: |
+          python3 ../device/scripts/mesa-check.py

@@ -170,3 +170,37 @@ jobs:
             UniXNU/out/sheng/*/*/payload/payload.img
             UniXNU/out/sheng/*/*/kernel/kernel.macho
             UniXNU/out/sheng/*/*/package.manifest.json
+      - name: build userdata-root.img
+        # `scripts/package.sh` (unixnu release) never runs `unixnu build
+        # userdata`, so the root file system image for the unixnu partition has
+        # to be built here. Doing it in this job reuses the same runner, the same
+        # tool install and the same checkouts instead of paying for a second
+        # macOS queue slot.
+        working-directory: UniXNU
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+        run: |
+          ./unixnu build userdata --dry-run
+          ./unixnu build userdata
+      - name: userdata report
+        if: always()
+        working-directory: UniXNU
+        run: |
+          echo '## userdata image' >> "$GITHUB_STEP_SUMMARY"
+          for f in out/sheng/*/*/userdata/userdata-root.json; do
+            [ -f "$f" ] || continue
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            head -c 8000 "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          ls -l out/sheng/*/*/userdata/ 2>/dev/null || true
+      - name: userdata image
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-${{ inputs.os }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            UniXNU/out/sheng/*/*/userdata/userdata-root.img
+            UniXNU/out/sheng/*/*/userdata/userdata-root.json

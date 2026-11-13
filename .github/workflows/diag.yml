@@ -1,33 +1,40 @@
 name: diag2
 on:
   workflow_dispatch:
+    inputs:
+      gib:
+        description: 'GiB to grow'
+        default: '8'
 jobs:
   probe:
     runs-on: macos-26
     steps:
-      - name: grow
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          path: u
+          submodules: false
+      - name: growtest
         run: |
-          set -x
-          cd /tmp && rm -rf gt && mkdir gt && cd gt
-          # 复现 make-data-seed.py 的 32m APFS 卷
+          cd u
+          git submodule update --init --depth 1 drivers/DarwinBoot 2>/dev/null || true
+          ls drivers/DarwinBoot/Test/packed_ramdisk.py
+          mkdir -p /tmp/w && cd /tmp/w
+          echo "=== 造 32m APFS seed 并 pack ==="
           hdiutil create -size 32m -layout NONE -fs APFS -volname Data -type UDTO seed.cdr
-          MOUNT=/tmp/gt/mount && mkdir -p $MOUNT
-          hdiutil attach -nobrowse -owners off -mountpoint $MOUNT -plist seed.cdr > att.plist
-          DEV=$(plutil -extract system-entities.0.dev-entry raw att.plist)
-          echo "DEV=$DEV"
-          hdiutil detach "$DEV"
-          # 打包成 raw 再扩 (模拟 packed_ramdisk)
-          truncate -s 215g big.raw
-          OUT=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse big.raw)
-          echo "OUT=$OUT"
-          STORE=$(echo "$OUT" | grep -oE "/dev/disk[0-9]+" | head -1)
-          echo "STORE=$STORE"
-          echo "=== apfs list 全文 ==="
-          diskutil apfs list -plist > apfs.plist; echo "rc=$?"
-          plutil -p apfs.plist | head -40
-          echo "=== 找 container ==="
-          CONT=$(plutil -extract Containers.0.ContainerReference raw apfs.plist 2>&1)
-          echo "CONT=$CONT"
-          echo "=== resizeContainer 0 ==="
-          diskutil apfs resizeContainer "$CONT" 0; echo "resize_rc=$?"
-          hdiutil detach "$STORE" -force || true
+          python3 - <<'PY'
+import sys, pathlib
+sys.path.insert(0, '/Users/runner/work/UniXNU-sheng/UniXNU-sheng/u/drivers/DarwinBoot/Test')
+import packed_ramdisk
+raw = pathlib.Path('/tmp/w/seed.cdr')
+raw2 = pathlib.Path('/tmp/w/seed.img')
+raw2.write_bytes(raw.read_bytes())
+meta = packed_ramdisk.pack(raw2, pathlib.Path('/tmp/w/base.dbr'))
+print('PACK:', meta)
+PY
+          ls -l /tmp/w/base.dbr
+          echo "=== 检查 base.dbr 头部 ==="
+          head -c 32 base.dbr | xxd
+          echo "=== grow 到 ${{ inputs.gib }} GiB ==="
+          python3 scripts/seed-data-grow.py --gib ${{ inputs.gib }} /tmp/w/base.dbr /tmp/w/out.dbr; echo "GROW_RC=$?"
+          ls -l /tmp/w/out.dbr 2>/dev/null || echo NOOUT

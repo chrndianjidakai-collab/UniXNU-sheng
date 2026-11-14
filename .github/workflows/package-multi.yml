@@ -178,6 +178,20 @@ jobs:
           echo '--- verify the check that failed before now passes ---'
           python3 tools/fetch-sources.py --check
           du -sh deps/* 2>/dev/null || true
+      - name: advance the sm8550 kit pin
+        # package/BluetoothProbe.cpp includes "Sm8550GeniUart.h" and calls
+        # sm8550_geni_uart14_vote()/sm8550_geni_uart14_source().
+        # build-gop-legacy-display-27.py compiles it with
+        #   -I <tree>/kits/Sm8550Platform
+        # but components.toml pins Sm8550Platform to a9f45dc6, whose
+        # kits/Sm8550Platform/ has only the GPU files (ShengGmu*, ShengGpuSmmu*).
+        # The GENI UART sources land one commit later, 009512d6, as pure additions
+        # (+218 lines, nothing removed). Without this the build dies with
+        #   fatal error: 'Sm8550GeniUart.h' file not found
+        working-directory: device
+        run: |
+          python3 scripts/advance-sm8550-kit.py ../UniXNU
+          grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path'
       - name: package
         id: package
         working-directory: device

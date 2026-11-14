@@ -111,54 +111,87 @@ jobs:
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
           key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
       - name: prepare preserved Data seed
+        # Three sources, in order, so a missing cache never stops the build:
+        #   1. seed/<profile>/data.dbr committed in this repository (stable)
+        #   2. the newest installation-seed artifact, one-day retention
+        #   3. the data_seed_url dispatch input when one is supplied
+        # A FIRST installation may instead select init_data.
         if: inputs.os == '27'
         env:
           INIT_DATA: ${{ inputs.init_data }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import hashlib, json, os, pathlib, subprocess, urllib.request
-          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())['inputs']
-          path = pathlib.Path('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr')
+          import hashlib, io, json, os, pathlib, shutil, urllib.error, urllib.request, zipfile
+          profile = 'ipados-27.0.1-24A446'
+          work = pathlib.Path('UniXNU/out/sheng') / profile / 'sheng_ipados27' / 'runtime'
+          seed = work / 'data.dbr'
+          stamp = work / 'inputs.json'
+          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text()).get('inputs') or {}
 
-          # The build cache once grew to 18 GB, over the 10 GB repository limit,
-          # and GitHub evicted the data-seed cache with it. The installation-seed
-          # artifact each run uploads (retention one day) is the same bytes; when
-          # the cache is gone, pull the newest one back from there instead of
-          # failing "No saved seed".
-          if not path.is_file():
-              req = urllib.request.Request(
-                  'https://api.github.com/repos/chrndianjidakai-collab/UniXNU-sheng/actions/artifacts?per_page=100',
-                  headers={'Authorization': 'Bearer ' + os.environ.get('GITHUB_TOKEN', ''),
-                           'Accept': 'application/vnd.github+json',
-                           'User-Agent': 'unixnu-seed-restore'})
-              with urllib.request.urlopen(req, timeout=60) as reply:
-                  listing = json.loads(reply.read())
-              candidates = [a for a in listing.get('artifacts', [])
-                            if a['name'].startswith('installation-seed-27') and not a.get('expired')]
+          if not seed.is_file():
+              committed = pathlib.Path('seed') / profile
+              if (committed / 'data.dbr').is_file():
+                  work.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(committed / 'data.dbr', seed)
+                  if (committed / 'inputs.json').is_file() and not stamp.is_file():
+                      shutil.copyfile(committed / 'inputs.json', stamp)
+                  print('seed: copied from seed/' + profile)
+
+          if not seed.is_file():
+              token = os.environ.get('GITHUB_TOKEN', '')
+              try:
+                  req = urllib.request.Request(
+                      'https://api.github.com/repos/chrndianjidakai-collab/UniXNU-sheng/actions/artifacts?per_page=100',
+                      headers={'Authorization': 'Bearer ' + token,
+                               'Accept': 'application/vnd.github+json',
+                               'User-Agent': 'unixnu-seed-restore'})
+                  with urllib.request.urlopen(req, timeout=60) as reply:
+                      listing = json.loads(reply.read())
+                  candidates = [a for a in listing.get('artifacts', [])
+                                if a['name'].startswith('installation-seed-27') and not a.get('expired')]
+              except (urllib.error.URLError, ValueError) as error:
+                  candidates = []
+                  print('seed: artifact listing failed:', error)
               if candidates:
                   newest = max(candidates, key=lambda a: a['created_at'])
-                  url = newest['archive_download_url']
-                  req = urllib.request.Request(url, headers={
-                      'Authorization': 'Bearer ' + os.environ.get('GITHUB_TOKEN', ''),
-                      'Accept': 'application/vnd.github+json'})
-                  with urllib.request.urlopen(req, timeout=300) as reply:
-                      import io as _io, zipfile as _zip
-                      archive = _zip.ZipFile(_io.BytesIO(reply.read()))
-                  member = [n for n in archive.namelist() if n.endswith('data.dbr')]
-                  if member:
-                      path.parent.mkdir(parents=True, exist_ok=True)
-                      path.write_bytes(archive.read(member[0]))
-                      stamp = path.with_name('inputs.json')
-                      if not stamp.is_file():
-                          others = [n for n in archive.namelist() if n.endswith('inputs.json')]
-                          if others:
-                              stamp.write_bytes(archive.read(others[0]))
-                      print(f'restored the seed from artifact {newest["name"]} '
-                            f'({len(member)} file, {path.stat().st_size} bytes)')
 
-          url, digest = inputs.get('data_seed_url', ''), inputs.get('data_seed_sha256', '').lower()
-          if url:
+                  # The archive endpoint answers 302 to a pre-signed blob URL that
+                  # rejects a bearer token; urllib would carry the header across the
+                  # redirect and the download dies with HTTP 401. Follow it by hand.
+                  class NoRedirect(urllib.request.HTTPRedirectHandler):
+                      def redirect_request(self, req, fp, code, msg, headers, newurl):
+                          return None
+
+                  payload = None
+                  try:
+                      with urllib.request.build_opener(NoRedirect).open(
+                              urllib.request.Request(newest['archive_download_url'], headers={
+                                  'Authorization': 'Bearer ' + token,
+                                  'Accept': 'application/vnd.github+json',
+                                  'User-Agent': 'unixnu-seed-restore'}), timeout=60) as reply:
+                          payload = reply.read()
+                  except urllib.error.HTTPError as error:
+                      if error.code in (301, 302, 303, 307, 308) and error.headers.get('Location'):
+                          with urllib.request.urlopen(error.headers['Location'], timeout=300) as blob:
+                              payload = blob.read()
+                      else:
+                          print('seed: artifact download failed:', error.code)
+                  if payload:
+                      archive = zipfile.ZipFile(io.BytesIO(payload))
+                      names = archive.namelist()
+                      members = [n for n in names if n.endswith('data.dbr')]
+                      stamps = [n for n in names if n.endswith('inputs.json')]
+                      if members:
+                          work.mkdir(parents=True, exist_ok=True)
+                          seed.write_bytes(archive.read(members[0]))
+                          if stamps and not stamp.is_file():
+                              stamp.write_bytes(archive.read(stamps[0]))
+                          print('seed: restored from artifact', newest['name'])
+
+          url = inputs.get('data_seed_url', '')
+          digest = inputs.get('data_seed_sha256', '').lower()
+          if url and not seed.is_file():
               print('::add-mask::' + url)
               if not url.startswith('https://') or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
                   raise SystemExit('A seed URL requires HTTPS and its SHA-256')
@@ -166,13 +199,18 @@ jobs:
                   data = source.read(64 * 1024 * 1024 + 1)
               if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != digest:
                   raise SystemExit('Seed size or SHA-256 mismatch')
-              if path.exists() and path.read_bytes() != data:
-                  raise SystemExit('Saved seed differs; preserve and inspect it instead of replacing this installation')
-              path.parent.mkdir(parents=True, exist_ok=True)
-              path.write_bytes(data)
-          if not path.is_file() and os.environ['INIT_DATA'] != 'true':
-              raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, or select init_data for a FIRST installation')
+              work.mkdir(parents=True, exist_ok=True)
+              seed.write_bytes(data)
+              print('seed: downloaded from the dispatch input')
+
+          if seed.is_file():
+              print('seed ready:', seed.stat().st_size, 'bytes',
+                    hashlib.sha256(seed.read_bytes()).hexdigest()[:16])
+          elif os.environ.get('INIT_DATA') != 'true':
+              raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, '
+                               'or select init_data for a FIRST installation')
           PY
+
       - name: repair the pinned Mesa series
         # turnip-frame-diagnostics.patch creates a header without the
         # "new file mode"/"index" lines git needs, so git apply aborts with

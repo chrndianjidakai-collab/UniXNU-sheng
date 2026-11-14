@@ -113,7 +113,11 @@ NEW_FUNC = '''def weak_defaults(source):
     # the one-way archive scan cannot resolve these circular references, so the
     # comparison kernel (which never runs) needs hidden weak fallbacks too.
     names.update({
-        'armcpu_spi_share', 'armdt_platform_clock_register',
+        # libNativeLegacyDisplay.late.a -> other archives (one-way scan cannot
+        # resolve the circular reference on arm64e). The whole armcpu_spi_*
+        # family is included so a later link stage cannot surface the siblings.
+        'armcpu_spi_share', 'armcpu_spi_mask', 'armcpu_spi_attach',
+        'armdt_platform_clock_register',
         'native_adreno_gpu_interrupt', 'native_adreno_pool_add',
         'sheng_bt_firmware_read', 'sheng_bt_firmware_release',
     })

@@ -208,15 +208,26 @@ jobs:
           echo '--- feeds.toml ---'
           grep -A3 'name = "sm8550"' feeds.toml || true
 
-          echo '--- both must now carry the new pin ---'
-          for f in ../UniXNU/components.toml feeds.toml; do
-            if grep -q '009512d6' "$f"; then
-              echo "OK   $f"
-            else
-              echo "FAIL $f does not carry 009512d6" >&2
-              exit 1
-            fi
-          done
+          echo '--- both must now carry the same pin ---'
+          # Do not hard-code the revision here: advance-sm8550-kit.py owns it, and
+          # a literal in this workflow already drifted out of sync once (the check
+          # looked for 009512d6 after the helper had moved to f04fd8b1 and failed
+          # the job even though the helper had done its work). Compare the two
+          # files against each other instead.
+          python3 - <<'PY'
+          import re, sys, pathlib
+          comp = pathlib.Path('../UniXNU/components.toml').read_text(encoding='utf-8')
+          feeds = pathlib.Path('feeds.toml').read_text(encoding='utf-8')
+          m = re.search(r'id = "Sm8550Platform".*?revision = "([0-9a-f]{40})"', comp, re.S)
+          f = re.search(r'name = "sm8550".*?commit = "([0-9a-f]{40})"', feeds, re.S)
+          if not m or not f:
+              sys.exit('could not read the Sm8550Platform revision or the feeds commit')
+          if m.group(1) != f.group(1):
+              sys.exit(f'pin mismatch: components.toml {m.group(1)[:8]} vs feeds.toml {f.group(1)[:8]}')
+          if m.group(1) == 'a9f45dc60c035084b95463781538380f4c3606c9':
+              sys.exit('the helper did not advance the pin; the kit would miss Sm8550GeniUart.h')
+          print(f'OK   both files pin sm8550 to {m.group(1)[:8]}')
+          PY
       - name: stage the proprietary firmware blobs
         # proprietary-files.txt lists three paths with SHA-256 digests:
         #   novatek/novatek_nt36532_n81a_fw_csot.bin   Touch

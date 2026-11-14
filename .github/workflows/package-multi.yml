@@ -143,6 +143,26 @@ jobs:
         working-directory: device
         run: |
           python3 scripts/repair-mesa-series.py ../UniXNU
+      - name: fetch the Wi-Fi supplicant sources
+        # drivers/Ath12kWifi/tools/prepare-supplicant.py starts with
+        #   fetch-sources.py --check
+        # and --check only verifies that deps/ already holds the locked trees; it
+        # downloads nothing. A fresh checkout has an empty deps/, so the payload
+        # step died at drivers/Ath12kWifi/tools/prepare-supplicant.py with exit 1
+        # after 26 minutes of kernel work. Fetch them once, up front.
+        #
+        # The locked sources are linux v7.0.14 (sparse), the wpa_supplicant 2.12
+        # release tarball and freebsd releng/15.1 (sparse).
+        working-directory: device/drivers/Ath12kWifi
+        timeout-minutes: 45
+        run: |
+          set -x
+          python3 --version
+          ls -l tools/fetch-sources.py tools/source-lock.json
+          python3 tools/fetch-sources.py
+          echo '--- verify the check that failed before now passes ---'
+          python3 tools/fetch-sources.py --check
+          du -sh deps/* 2>/dev/null || true
       - name: package
         id: package
         working-directory: device

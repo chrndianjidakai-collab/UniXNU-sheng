@@ -101,9 +101,24 @@ NEW_FUNC = '''def weak_defaults(source):
             # valid C declaration; fall back to 'int' for such rare cases.
             if not base or re.search(r'\\b(class|public|namespace|template)\\b|extern "C"|[{}]', base):
                 base = 'int'
+            # Struct-typed weak symbols: the C linker matches by name only, so a
+            # zero-filled byte array is a valid hidden weak definition and avoids
+            # "tentative definition has type 'struct X' that is never completed".
+            # Grab the declarator name directly from just before __attribute__,
+            # independent of the base type (which may repeat the struct tag).
+            struct_decls = re.findall(
+                r'([A-Za-z_]\w*)\s*(?:\[[^\]]*\]|\([^)]*\))?\s*__attribute__\(\(weak_import\)\)',
+                statement)
+            if base.startswith('struct'):
+                for nm in struct_decls:
+                    lines.append(f'__attribute__((weak, visibility("hidden"))) char {nm}[4096];')
+                continue
             for name in names:
-                tail = statement[statement.index(name) + len(name):]
-                is_call = tail.lstrip().startswith('(') and '(*' not in statement[:statement.index(name)]
+                # Use the LAST occurrence: `struct X X[8]` contains the type name
+                # and the variable name, and .index() would hit the type name.
+                at = statement.rindex(name)
+                tail = statement[at + len(name):]
+                is_call = tail.lstrip().startswith('(') and '(*' not in statement[:at]
                 if is_call:
                     params = re.match(r'\\s*\\(([^)]*)\\)', tail)
                     params = (params.group(1) if params else '').strip()
@@ -112,13 +127,13 @@ NEW_FUNC = '''def weak_defaults(source):
                     lines.append(f'__attribute__((weak, visibility("hidden"))) {base} {name}({params}) {{{body} }}')
                 else:
                     lines.append(f'__attribute__((weak, visibility("hidden"))) {base} {name};')
-    # The generated file needs only the fixed-width integer typedefs; copying the
+    # The generated file needs only the fixed-width integer typedefs. Copying the
     # sources' #include lines in (especially the C++ probe headers such as qbt.h
-    # and the IOKit C++ headers) makes a pure C file fail with
-    # "unknown type name 'class'" and hundreds of follow-on errors. Keep the two
-    # C standard headers the emitted declarations actually need, plus the pragma
-    # that silences the C23 extension warning on unnamed parameters.
+    # and the IOKit C++ headers) makes a pure C file fail with "unknown type name
+    # 'class'" and hundreds of follow-on errors; struct-typed weak symbols are
+    # emitted as byte arrays above, so no struct definitions are needed either.
     headers = ['#include <stdint.h>', '#include <stddef.h>']
+    # The defaults keep the declarations' unnamed parameters.
     pragma = ['#pragma clang diagnostic ignored "-Wc23-extensions"']
     return '\\n'.join(headers + pragma + lines) + '\\n'
 '''

@@ -78,6 +78,10 @@ NEW_FUNC = '''def weak_defaults(source):
         text = src.read_text()
         text = re.sub(r'//[^\\n]*', '', text)
         text = re.sub(r'/\\*.*?\\*/', '', text, flags=re.S)
+        # #include directives have no ';' and would otherwise be glued into the
+        # preceding/succeeding declaration when we split on ';'. Strip them (and
+        # all preprocessor lines) before folding continuations.
+        text = re.sub(r'^\\s*#.*$', '', text, flags=re.M)
         text = re.sub(r'\\n\\s*', ' ', text)
         for statement in re.split(r';', text):
             statement = statement.strip()
@@ -101,19 +105,15 @@ NEW_FUNC = '''def weak_defaults(source):
                     lines.append(f'__attribute__((weak, visibility("hidden"))) {base} {name}({params}) {{{body} }}')
                 else:
                     lines.append(f'__attribute__((weak, visibility("hidden"))) {base} {name};')
-    # Quoted headers are resolved next to each source, which the generated file is not.
-    includes = []
-    for src in sources:
-        includes += [l.replace('#include "', f'#include "{src.parent}/') for l in src.read_text().splitlines()
-                     if l.startswith('#include')]
-    # Element types the declarations name are defined in the sources themselves.
-    named = set(re.findall(r'struct (\\w+)', '\\n'.join(lines)))
-    for src in sources:
-        includes += [m.group(0) for m in re.finditer(r'^struct (\\w+) \\{[^;{}]*(?:;[^;{}]*)*\\};', src.read_text(), re.M)
-                     if m.group(1) in named]
-    # The defaults keep the declarations' unnamed parameters.
+    # The generated file needs only the fixed-width integer typedefs; copying the
+    # sources' #include lines in (especially the C++ probe headers such as qbt.h
+    # and the IOKit C++ headers) makes a pure C file fail with
+    # "unknown type name 'class'" and hundreds of follow-on errors. Keep the two
+    # C standard headers the emitted declarations actually need, plus the pragma
+    # that silences the C23 extension warning on unnamed parameters.
+    headers = ['#include <stdint.h>', '#include <stddef.h>']
     pragma = ['#pragma clang diagnostic ignored "-Wc23-extensions"']
-    return '\\n'.join(includes + pragma + lines) + '\\n'
+    return '\\n'.join(headers + pragma + lines) + '\\n'
 '''
 
 

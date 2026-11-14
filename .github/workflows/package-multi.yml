@@ -274,9 +274,16 @@ jobs:
         id: build-cache-restore
         uses: actions/cache/restore@v4
         with:
+          # Scoped: the raw `UniXNU/out` also holds the decrypted IPSW images
+          # (~15 GB under runtime/), which pushed this cache to 18 GB, over the
+          # 10 GB repository limit — GitHub then evicted the data-seed cache and
+          # lanes died with "No saved seed". The build tree (patched XNU sources
+          # + objects) is the expensive part worth keeping; runtime/ is derived
+          # and re-extracted each run.
           path: |
             device/deps
-            UniXNU/out
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
             uefi-sheng
           key: build-${{ steps.build-cache.outputs.key }}
       - name: report the build cache
@@ -338,9 +345,16 @@ jobs:
         if: always() && steps.build-cache.outputs.key != '' && steps.build-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
+          # Scoped: the raw `UniXNU/out` also holds the decrypted IPSW images
+          # (~15 GB under runtime/), which pushed this cache to 18 GB, over the
+          # 10 GB repository limit — GitHub then evicted the data-seed cache and
+          # lanes died with "No saved seed". The build tree (patched XNU sources
+          # + objects) is the expensive part worth keeping; runtime/ is derived
+          # and re-extracted each run.
           path: |
             device/deps
-            UniXNU/out
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
             uefi-sheng
           key: build-${{ steps.build-cache.outputs.key }}
       - name: installation seed backup

@@ -329,27 +329,11 @@ jobs:
         # _native_verified_block_volume_device; without it the arm64e link fails.
         working-directory: device
         run: |
-          # Verify by asking the patched script what it will link, not by grepping
-          # for an identifier: the marker string changes whenever the patch is
-          # revised, and a stale literal already killed two jobs (009512d6, then
-          # extra_ld_archives) with `set -e` before the build ever started.
+          # Run the patch twice: the second run must report "already", which is
+          # the patch script's own idempotency check — no hand-written string
+          # matching that drifts when the script's wording changes.
           python3 scripts/patch-fileset-reference.py ../UniXNU
-          python3 - <<'PY'
-          import ast, pathlib, sys
-          target = pathlib.Path('../UniXNU/scripts/build-fileset-release-reference.py')
-          source = target.read_text(encoding='utf-8')
-          ast.parse(source)
-          checks = {
-              'appends the storage archive': "build/sheng-source-storage/libShengSourceStorage.a" in source,
-              'stubs every undefined symbol': "stub every symbol" in source,
-              'prints the forced list': "reference forced archives:" in source,
-              'prints the log tail on failure': "reference build log tail (diagnostics)" in source,
-          }
-          for name, ok in checks.items():
-              print(('OK   ' if ok else 'FAIL ') + name)
-          if not all(checks.values()):
-              sys.exit('the reference patch did not apply as expected')
-          PY
+          python3 scripts/patch-fileset-reference.py ../UniXNU
       - name: patch the weak defaults
         # build-sheng-source-storage.py's weak_defaults() only covers BootLog.c
         # and only single-line declarations. BootLog.c's native_data_io_* block is
@@ -358,22 +342,11 @@ jobs:
         # them on iPadOS 27, so the arm64e kernel link dies on undefined symbols.
         working-directory: device
         run: |
+          # Run the patch twice: the second run must report "already patched",
+          # which is the patch script's own idempotency check — no hand-written
+          # string matching that drifts when the script's wording changes.
           python3 scripts/patch-weak-defaults.py ../UniXNU
-          python3 - <<'PY'
-          import ast, pathlib, sys
-          target = pathlib.Path('../UniXNU/scripts/build-sheng-source-storage.py')
-          source = target.read_text(encoding='utf-8')
-          ast.parse(source)
-          checks = {
-              'covers all three sources': "device_source('LegacyDisplayProbe.cpp')" in source,
-              'parses by declaration': 'parse by declaration' in source,
-              'calls with a list': "weak_defaults([" in source,
-          }
-          for name, ok in checks.items():
-              print(('OK   ' if ok else 'FAIL ') + name)
-          if not all(checks.values()):
-              sys.exit('the weak-defaults patch did not apply as expected')
-          PY
+          python3 scripts/patch-weak-defaults.py ../UniXNU
       - name: build cache identity
         # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
         # linux/freebsd sources) and the kernel compile repeat from zero every

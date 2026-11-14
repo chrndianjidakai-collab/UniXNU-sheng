@@ -245,6 +245,44 @@ jobs:
           echo '--- confirm all three digests ---'
           python3 scripts/stage-proprietary.py . --check
           ls -l .cache/firmware/nanosic .cache/firmware/novatek .cache/firmware/qcom/sm8550/sheng
+      - name: patch the fileset reference build
+        # build-fileset-release-reference.py hard-codes the archives it links
+        # (libpthread_kernel, libArmDTPlatform, libArmCpu) and never reads the
+        # defconfig. On 27 the kernel path needs libShengSourceStorage.a, which
+        # defines _sheng_boot_watchdog_policy and
+        # _native_verified_block_volume_device; without it the arm64e link fails.
+        working-directory: device
+        run: |
+          python3 scripts/patch-fileset-reference.py ../UniXNU
+          python3 -c "import ast,sys; ast.parse(open('../UniXNU/scripts/build-fileset-release-reference.py').read()); print('reference script parses')"
+          grep -n 'extra_ld_archives' ../UniXNU/scripts/build-fileset-release-reference.py
+      - name: build cache identity
+        # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
+        # linux/freebsd sources) and the kernel compile repeat from zero every
+        # run — roughly 4 + 35 minutes. The key folds in everything that changes
+        # the objects: board.toml, the source pins, the component pins, the patch
+        # series, the driver scripts, both repository revisions and the profile.
+        # A changed patch therefore misses the cache instead of restoring stale
+        # objects, which is the failure mode that matters here.
+        id: build-cache
+        working-directory: device
+        run: |
+          key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os }}")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "build cache key: $key"
+      - name: restore the build cache
+        id: build-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            device/deps
+            UniXNU/out
+            uefi-sheng
+          key: build-${{ steps.build-cache.outputs.key }}
+      - name: report the build cache
+        run: |
+          echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
+          du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
       - name: package
         id: package
         working-directory: device
@@ -289,6 +327,18 @@ jobs:
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
           key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+      - name: save the build cache
+        # Only on success: a half-written object tree restored into the next run
+        # is worse than starting clean. `package` succeeding means the objects
+        # and archives are consistent.
+        if: success() && steps.package.outcome == 'success' && steps.build-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            device/deps
+            UniXNU/out
+            uefi-sheng
+          key: build-${{ steps.build-cache.outputs.key }}
       - name: installation seed backup
         if: always() && inputs.os == '27' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
         uses: actions/upload-artifact@v4

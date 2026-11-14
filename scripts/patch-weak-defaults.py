@@ -124,7 +124,7 @@ def main():
         raise SystemExit(f'{target} missing')
     text = target.read_text(encoding='utf-8')
 
-    if 'parse by declaration so multi-line' in text:
+    if 'parses by declaration so multi-line' in text:
         print(f'{SCRIPT}: already patched')
         return 0
     if OLD_FUNC not in text:

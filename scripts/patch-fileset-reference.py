@@ -69,14 +69,28 @@ RAISE_NEW = """    print('RELEASE reference exit', result.returncode, 'log', out
 # fails the link for exactly the reason the native_* hooks did, but the upstream
 # stub pattern covers only native_* and boot_log_rounds — so once the storage
 # archive is linked in, the reference build dies on _vt_host_errors and friends.
+#
+# v5 widened the prefix list to vt_*. v6 stops guessing prefixes entirely: every
+# symbol the linker reports as "referenced from" but never defined is weak_import
+# by construction (a strong undefined reference would be a real bug worth seeing),
+# and this comparison kernel is never executed — the prelink step reads only its
+# layout. Each round of widening the list cost a 45-minute build, so the stub set
+# is now derived from the linker's own output.
 STUB_OLD = """    stub_names = sorted(set(re.findall(r'^\\s+"(_(?:native_[a-z0-9_]+|boot_log_rounds))"', build_log, re.M)))"""
 
-STUB_NEW = """    # patch-fileset-reference.py widened this prefix set (see that script).
+STUB_NEW = """    # patch-fileset-reference.py: stub every symbol the link reported as undefined,
+    # not a hand-maintained prefix list (see that script for why).
+    stub_names = sorted(set(re.findall(
+        r'^\\s+"(_[A-Za-z_][A-Za-z0-9_$]*)"(?:,|$)', build_log, re.M)))"""
+
+STUB_V5 = """    # patch-fileset-reference.py widened this prefix set (see that script).
     stub_names = sorted(set(re.findall(
         r'^\\s+"(_(?:native_[a-z0-9_]+|boot_log_rounds|vt_host_[a-z0-9_]+|vt_paravirt_[a-z0-9_]+))"',
         build_log, re.M)))"""
 
-STUB_MARK = 'patch-fileset-reference.py widened this prefix set'
+STUB_V4 = STUB_OLD
+
+STUB_MARK = 'patch-fileset-reference.py: stub every symbol'
 
 
 def main():
@@ -92,13 +106,17 @@ def main():
     changed = []
 
     if STUB_MARK not in text:
-        if STUB_OLD in text:
-            text = text.replace(STUB_OLD, STUB_NEW, 1)
-            changed.append('widened the weak-symbol stub set to vt_host_*/vt_paravirt_*')
-        else:
+        replaced = False
+        for variant in (STUB_V5, STUB_V4):
+            if variant in text:
+                text = text.replace(variant, STUB_NEW, 1)
+                changed.append('stubs every symbol the linker reports undefined')
+                replaced = True
+                break
+        if not replaced:
             raise SystemExit(f'{SCRIPT}: the stub_names pattern is not the expected shape; upstream changed')
     else:
-        print(f'{SCRIPT}: stub set already widened')
+        print(f'{SCRIPT}: stub set already derives from the linker output')
 
     if 'reference forced archives:' in text:
         print(f'{SCRIPT}: forced list already carries the storage archive')

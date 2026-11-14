@@ -190,8 +190,19 @@ jobs:
         #   fatal error: 'Sm8550GeniUart.h' file not found
         working-directory: device
         run: |
-          python3 scripts/advance-sm8550-kit.py ../UniXNU
+          # The pin is recorded in three places; the helper rewrites all of them:
+          #   UniXNU/components.toml  [[component]] id = "Sm8550Platform"  revision
+          #   UniXNU/unixnu.lock      [source."sm8550"]                    commit
+          #   device/feeds.toml       [[source]] name = "sm8550"           commit
+          python3 scripts/advance-sm8550-kit.py ../UniXNU .
+          echo '--- components.toml ---'
           grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path'
+          echo '--- unixnu.lock ---'
+          grep -A1 'sm8550' ../UniXNU/unixnu.lock
+          echo '--- feeds.toml ---'
+          grep -A3 'name = "sm8550"' feeds.toml
+          echo '--- the kit must now carry the GENI UART sources ---'
+          grep -c '009512d6' ../UniXNU/components.toml ../UniXNU/unixnu.lock feeds.toml
       - name: package
         id: package
         working-directory: device

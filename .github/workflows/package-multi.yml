@@ -329,9 +329,26 @@ jobs:
         # _native_verified_block_volume_device; without it the arm64e link fails.
         working-directory: device
         run: |
+          # Verify by asking the patched script what it will link, not by grepping
+          # for an identifier: the marker string changes whenever the patch is
+          # revised, and a stale literal already killed two jobs (009512d6, then
+          # extra_ld_archives) with `set -e` before the build ever started.
           python3 scripts/patch-fileset-reference.py ../UniXNU
-          python3 -c "import ast,sys; ast.parse(open('../UniXNU/scripts/build-fileset-release-reference.py').read()); print('reference script parses')"
-          grep -n 'extra_ld_archives' ../UniXNU/scripts/build-fileset-release-reference.py
+          python3 - <<'PY'
+          import ast, pathlib, sys
+          target = pathlib.Path('../UniXNU/scripts/build-fileset-release-reference.py')
+          source = target.read_text(encoding='utf-8')
+          ast.parse(source)
+          checks = {
+              'appends the storage archive': "build/sheng-source-storage/libShengSourceStorage.a" in source,
+              'prints the forced list': "reference forced archives:" in source,
+              'prints the log tail on failure': "reference build log tail (diagnostics)" in source,
+          }
+          for name, ok in checks.items():
+              print(('OK   ' if ok else 'FAIL ') + name)
+          if not all(checks.values()):
+              sys.exit('the reference patch did not apply as expected')
+          PY
       - name: build cache identity
         # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
         # linux/freebsd sources) and the kernel compile repeat from zero every

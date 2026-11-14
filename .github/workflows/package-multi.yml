@@ -159,6 +159,16 @@ jobs:
           set -x
           python3 --version
           ls -l tools/fetch-sources.py tools/source-lock.json
+          # tools/source-lock.json lists every sparse path with a leading slash:
+          #   "paths": ["/drivers/net/wireless/ath/", "/include/", ...]
+          # fetch-sources.py hands those straight to
+          #   git sparse-checkout add <paths...>
+          # which answers "fatal: specify directories rather than patterns (no
+          # leading slash)" and aborts. Strip the slash first; the commit pins and
+          # the supplicant sha256 are untouched.
+          # The helper lives in the device repository's scripts/, two levels up
+          # from drivers/Ath12kWifi.
+          python3 ../../scripts/fix-ath12k-sparse-paths.py .
           python3 tools/fetch-sources.py
           echo '--- verify the check that failed before now passes ---'
           python3 tools/fetch-sources.py --check

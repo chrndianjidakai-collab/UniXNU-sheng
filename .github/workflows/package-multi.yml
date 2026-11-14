@@ -350,6 +350,30 @@ jobs:
           if not all(checks.values()):
               sys.exit('the reference patch did not apply as expected')
           PY
+      - name: patch the weak defaults
+        # build-sheng-source-storage.py's weak_defaults() only covers BootLog.c
+        # and only single-line declarations. BootLog.c's native_data_io_* block is
+        # one declaration folded across six lines, and LegacyDisplayProbe.cpp /
+        # BluetoothProbe.cpp declare their own weak_import symbols; nothing provides
+        # them on iPadOS 27, so the arm64e kernel link dies on undefined symbols.
+        working-directory: device
+        run: |
+          python3 scripts/patch-weak-defaults.py ../UniXNU
+          python3 - <<'PY'
+          import ast, pathlib, sys
+          target = pathlib.Path('../UniXNU/scripts/build-sheng-source-storage.py')
+          source = target.read_text(encoding='utf-8')
+          ast.parse(source)
+          checks = {
+              'covers all three sources': "device_source('LegacyDisplayProbe.cpp')" in source,
+              'parses by declaration': 'parse by declaration' in source,
+              'calls with a list': "weak_defaults([" in source,
+          }
+          for name, ok in checks.items():
+              print(('OK   ' if ok else 'FAIL ') + name)
+          if not all(checks.values()):
+              sys.exit('the weak-defaults patch did not apply as expected')
+          PY
       - name: build cache identity
         # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
         # linux/freebsd sources) and the kernel compile repeat from zero every

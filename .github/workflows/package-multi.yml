@@ -217,6 +217,23 @@ jobs:
               exit 1
             fi
           done
+      - name: stage the proprietary firmware blobs
+        # proprietary-files.txt lists three paths with SHA-256 digests:
+        #   novatek/novatek_nt36532_n81a_fw_csot.bin   Touch
+        #   nanosic/MCU_Upgrade.bin                    Keyboard
+        #   qcom/sm8550/sheng/vpu30_4v.mbn             Video
+        # build-gop-legacy-display-27.py reads them from <device>/.cache/firmware
+        # near the end of its 35-minute run and aborts with
+        #   nanosic/MCU_Upgrade.bin: run scripts/extract-files.py --section Keyboard
+        # Stage them up front, verifying each digest.
+        working-directory: device
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/stage-proprietary.py .
+          echo '--- confirm all three digests ---'
+          python3 scripts/stage-proprietary.py . --check
+          ls -l .cache/firmware/nanosic .cache/firmware/novatek .cache/firmware/qcom/sm8550/sheng
       - name: package
         id: package
         working-directory: device

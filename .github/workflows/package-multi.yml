@@ -328,10 +328,14 @@ jobs:
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
           key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
       - name: save the build cache
-        # Only on success: a half-written object tree restored into the next run
-        # is worse than starting clean. `package` succeeding means the objects
-        # and archives are consistent.
-        if: success() && steps.package.outcome == 'success' && steps.build-cache-restore.outputs.cache-hit != 'true'
+        # Save even when a later archive step fails. A failed run's objects are
+        # still valid input for the next run: the XNU patch step skips itself when
+        # its inputs signature matches (unixnu/patches.py), make only rebuilds
+        # what is missing, and the qualified archives carry sha256 checks at link
+        # time. Losing 40+ minutes of objects on every failed probe costs far
+        # more than the rare half-written object, which a linker error exposes.
+        # Always() also covers manual cancellations mid-compile.
+        if: always() && steps.build-cache.outputs.key != '' && steps.build-cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |

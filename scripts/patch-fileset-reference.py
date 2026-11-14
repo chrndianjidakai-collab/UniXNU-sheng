@@ -60,21 +60,25 @@ NEW = """    forced = [root/f'build/{folder}/{name}' for folder,name in (
 HELPER = '''def extra_ld_archives(root):
     """Archives named by CONFIG_XNU_EXTRA_LD_ARCHIVES for the selected profile.
 
-    The kernel build receives the value through its make environment. Here the
-    prepared XNU tree's .config is read instead: `unixnu` writes the composed
-    configuration there before the kernel step runs. Entries look like
+    `unixnu` composes the defconfig into ctx.work/.config before the kernel
+    step runs (config.py:167: self.config_path = self.work / '.config', and the
+    reference script is invoked with --tree pointing at that same work root).
+    The composed file is therefore at <root>/.config. Entries look like
     "-Wl,-force_load,{tree}/build/.../libX.a", where {tree} is this root.
     """
     import shlex
     value = os.environ.get('XNU_EXTRA_LD_ARCHIVES', '')
     if not value:
-        config = root / '.cache/xnu-work/.config'
-        if config.is_file():
-            for line in config.read_text(errors='replace').splitlines():
+        for candidate in (root / '.config', root / '.cache/xnu-work/.config'):
+            if not candidate.is_file():
+                continue
+            for line in candidate.read_text(errors='replace').splitlines():
                 name, _, raw = line.partition('=')
                 if name.strip() == 'CONFIG_XNU_EXTRA_LD_ARCHIVES':
                     value = raw.strip().strip('"')
                     break
+            if value:
+                break
     archives = []
     for token in shlex.split(value):
         if not token.startswith('-Wl,-force_load,'):

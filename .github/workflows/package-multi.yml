@@ -341,6 +341,7 @@ jobs:
           ast.parse(source)
           checks = {
               'appends the storage archive': "build/sheng-source-storage/libShengSourceStorage.a" in source,
+              'widens the weak stubs to vt_*': "vt_paravirt_[a-z0-9_]+" in source,
               'prints the forced list': "reference forced archives:" in source,
               'prints the log tail on failure': "reference build log tail (diagnostics)" in source,
           }

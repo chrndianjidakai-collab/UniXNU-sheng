@@ -64,6 +64,20 @@ RAISE_NEW = """    print('RELEASE reference exit', result.returncode, 'log', out
         print(tail, flush=True)
         raise SystemExit(result.returncode)"""
 
+# BootLog.c declares the VideoToolbox counters as weak_import (vt_host_*,
+# vt_paravirt_*). On arm64e the authenticated pointer of an undefined weak symbol
+# fails the link for exactly the reason the native_* hooks did, but the upstream
+# stub pattern covers only native_* and boot_log_rounds — so once the storage
+# archive is linked in, the reference build dies on _vt_host_errors and friends.
+STUB_OLD = """    stub_names = sorted(set(re.findall(r'^\\s+"(_(?:native_[a-z0-9_]+|boot_log_rounds))"', build_log, re.M)))"""
+
+STUB_NEW = """    # patch-fileset-reference.py widened this prefix set (see that script).
+    stub_names = sorted(set(re.findall(
+        r'^\\s+"(_(?:native_[a-z0-9_]+|boot_log_rounds|vt_host_[a-z0-9_]+|vt_paravirt_[a-z0-9_]+))"',
+        build_log, re.M)))"""
+
+STUB_MARK = 'patch-fileset-reference.py widened this prefix set'
+
 
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()
@@ -72,24 +86,33 @@ def main():
         raise SystemExit(f'{target} missing')
     text = target.read_text(encoding='utf-8')
 
-    if 'reference forced archives:' in text:
-        print(f'{SCRIPT}: already carries the v4 patch')
-        return 0
+    # Each section is applied independently, so a checkout that already carries an
+    # earlier revision of this patch still receives the later ones. An early
+    # `return` on the first marker made v5 impossible to apply over v4.
+    changed = []
 
-    changed = False
-    if FORCED_OLD in text:
+    if STUB_MARK not in text:
+        if STUB_OLD in text:
+            text = text.replace(STUB_OLD, STUB_NEW, 1)
+            changed.append('widened the weak-symbol stub set to vt_host_*/vt_paravirt_*')
+        else:
+            raise SystemExit(f'{SCRIPT}: the stub_names pattern is not the expected shape; upstream changed')
+    else:
+        print(f'{SCRIPT}: stub set already widened')
+
+    if 'reference forced archives:' in text:
+        print(f'{SCRIPT}: forced list already carries the storage archive')
+    elif FORCED_OLD in text:
         text = text.replace(FORCED_OLD, FORCED_NEW, 1)
-        changed = True
-        print(f'{SCRIPT}: appended the storage archive to the forced list')
+        changed.append('appended the storage archive to the forced list')
     elif "extra = root / 'build/sheng-source-storage" not in text:
         raise SystemExit(f'{SCRIPT}: forced list not found in the expected shape; upstream changed')
 
-    if RAISE_OLD in text:
+    if 'reference build log tail (diagnostics)' in text:
+        pass
+    elif RAISE_OLD in text:
         text = text.replace(RAISE_OLD, RAISE_NEW, 1)
-        changed = True
-        print(f'{SCRIPT}: failures now print the reference build log tail')
-    elif 'reference build log tail (diagnostics)' in text:
-        pass  # already carried from a previous run of this script
+        changed.append('failures print the reference build log tail')
     else:
         print(f'{SCRIPT}: warning: raise block not found; failure diagnostics not added')
 
@@ -98,6 +121,8 @@ def main():
         return 0
 
     target.write_text(text, encoding='utf-8')
+    for item in changed:
+        print(f'{SCRIPT}: {item}')
     return 0
 
 

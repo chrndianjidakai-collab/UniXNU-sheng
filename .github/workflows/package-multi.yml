@@ -190,19 +190,33 @@ jobs:
         #   fatal error: 'Sm8550GeniUart.h' file not found
         working-directory: device
         run: |
-          # The pin is recorded in three places; the helper rewrites all of them:
+          # The pin is recorded in three places; the helper rewrites whichever
+          # of them this checkout actually carries:
           #   UniXNU/components.toml  [[component]] id = "Sm8550Platform"  revision
           #   UniXNU/unixnu.lock      [source."sm8550"]                    commit
           #   device/feeds.toml       [[source]] name = "sm8550"           commit
+          #
+          # unixnu.lock does not exist in a fresh UniXNU checkout (it is written
+          # by "unixnu fetch"), so every check below must tolerate absence: an
+          # earlier revision of this step ended with a bare `grep` on a missing
+          # file and killed the whole job with exit 2 before the build started.
           python3 scripts/advance-sm8550-kit.py ../UniXNU .
+
           echo '--- components.toml ---'
-          grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path'
-          echo '--- unixnu.lock ---'
-          grep -A1 'sm8550' ../UniXNU/unixnu.lock
+          grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path' || true
+
           echo '--- feeds.toml ---'
-          grep -A3 'name = "sm8550"' feeds.toml
-          echo '--- the kit must now carry the GENI UART sources ---'
-          grep -c '009512d6' ../UniXNU/components.toml ../UniXNU/unixnu.lock feeds.toml
+          grep -A3 'name = "sm8550"' feeds.toml || true
+
+          echo '--- both must now carry the new pin ---'
+          for f in ../UniXNU/components.toml feeds.toml; do
+            if grep -q '009512d6' "$f"; then
+              echo "OK   $f"
+            else
+              echo "FAIL $f does not carry 009512d6" >&2
+              exit 1
+            fi
+          done
       - name: package
         id: package
         working-directory: device

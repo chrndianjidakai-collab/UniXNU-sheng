@@ -108,6 +108,15 @@ NEW_FUNC = '''def weak_defaults(source):
             name = m.group(1)
             if name not in keywords:
                 names.add(name)
+    # Strong symbols that libNativeLegacyDisplay.late.a references but whose
+    # providing archives are ordered after it in LD_KERNEL_ARCHIVES. On arm64e
+    # the one-way archive scan cannot resolve these circular references, so the
+    # comparison kernel (which never runs) needs hidden weak fallbacks too.
+    names.update({
+        'armcpu_spi_share', 'armdt_platform_clock_register',
+        'native_adreno_gpu_interrupt', 'native_adreno_pool_add',
+        'sheng_bt_firmware_read', 'sheng_bt_firmware_release',
+    })
     lines = [f'__attribute__((weak, visibility("hidden"))) char {name}[8];'
              for name in sorted(names)]
     return '\\n'.join(lines) + '\\n' if lines else ''

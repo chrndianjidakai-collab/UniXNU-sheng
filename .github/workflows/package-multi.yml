@@ -143,21 +143,6 @@ jobs:
         working-directory: device
         run: |
           python3 scripts/repair-mesa-series.py ../UniXNU
-      - name: retain the WCN7850 firmware inputs
-        # package run lane-3 died after 39 minutes with
-        #   FileNotFoundError: .../device/firmware/wcn7850/amss.bin
-        # because extract-sheng-firmware.py keeps only xbl/uefi/abl/aop/... and
-        # drops the three files firmware/wcn7850/manifest.json pins. Widen the
-        # selection and stage them before the firmware preflight runs.
-        working-directory: device
-        env:
-          UNIXNU_DEVICE: ${{ github.workspace }}/device
-        run: |
-          # extract-sheng-firmware.py lives in this device repository, not in the
-          # UniXNU checkout: board.toml [firmware] preflight names it as
-          # scripts/extract-sheng-firmware.py relative to the device tree.
-          python3 scripts/patch-extract-firmware.py .
-          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('scripts/extract-sheng-firmware.py').read_text()); print('extract-sheng-firmware.py parses after the patch')"
       - name: package
         id: package
         working-directory: device

@@ -90,10 +90,17 @@ NEW_FUNC = '''def weak_defaults(source):
             names = re.findall(r'([A-Za-z_]\\w*)\\s*(?:\\[[^\\]]*\\]|\\([^)]*\\))?\\s*__attribute__\\(\\(weak_import\\)\\)', statement)
             if not names:
                 continue
+            # strip linkage spec, 'extern', and any stray closing braces left over
+            # from a preceding scope when the declaration was folded onto one line
             without_extern = re.sub(r'^extern\\s+"C"\\s*', '', statement)
             without_extern = re.sub(r'^extern\\s+', '', without_extern)
+            without_extern = re.sub(r'^[}\\s]+', '', without_extern)
             first = names[0]
             base = without_extern[:without_extern.index(first)].strip()
+            # A base type that still carries C++ linkage/scope junk cannot be a
+            # valid C declaration; fall back to 'int' for such rare cases.
+            if not base or re.search(r'\\b(class|public|namespace|template)\\b|extern "C"|[{}]', base):
+                base = 'int'
             for name in names:
                 tail = statement[statement.index(name) + len(name):]
                 is_call = tail.lstrip().startswith('(') and '(*' not in statement[:statement.index(name)]

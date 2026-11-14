@@ -1,0 +1,17 @@
+{
+  "inputs": {
+    "data_ramdisk": {
+      "path": "/Users/runner/work/UniXNU-sheng/UniXNU-sheng/UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr",
+      "sha256": "dca1b66a3b892a2a87f08af51f05a7e691feb53f53cb6f8415e5e50e56bd66b4"
+    },
+    "trust_cache": {
+      "path": "/Users/runner/work/UniXNU-sheng/UniXNU-sheng/UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/owner-trust.bundle",
+      "sha256": "41c0860894f71727d5bc67aa91367341c077f38258305154004d75a3dede17c6"
+    },
+    "gpu_addon": {
+      "path": "/Users/runner/work/UniXNU-sheng/UniXNU-sheng/UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/wifi-addon.bin",
+      "sha256": "44404a715c3c26be50e5c2ff112bd328ef05917a7347cf65fec5dd08a9b7e64e"
+    }
+  },
+  "data_volume_uuid": "11C3CCC8-7497-45EA-89BD-A85B84C4099A"
+}

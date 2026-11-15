@@ -1,8 +1,8 @@
-"""Place the native __DATA segment after __KLD and report the layout.
+"""Place the native __DATA segment into a free run of the collection's __DATA.
 
-fileset_layout.Layout.__init__ pins the native __DATA segment at the ORIGINAL
-address of the collection's __DATA and then refuses to continue when the
-retained kext code plus the native __KLD segment has already run past it:
+fileset_layout.Layout.__init__ pins the native __DATA at the ORIGINAL address of
+the collection's __DATA and then refuses to continue when the retained kext code
+plus the native __KLD segment has already run past it:
 
     code_end = self.end('__KLD')
     if code_end > self.roots['__DATA']['va']:
@@ -14,12 +14,16 @@ the USB device and host stacks) the retained kext code is large enough to reach
 that address, so the pinned __DATA cannot hold.
 
 Every native segment is placed through Layout.placements and read back through
-translate(); relocate/fixup rewrites the pointers, and __LINKINFO, __LINKEDIT,
-__PRELINK_INFO, __KLDDATA and __BOOTDATA are already allocated dynamically after
-the retained mapping. __DATA is the last segment still pinned, so this patch
-allocates it after __KLD like the others, keeps it inside the collection's
-__DATA mapping when that mapping has room, and prints the full segment table
-plus the overrun when it still does not fit.
+translate(); the fixups are rewritten, so the address may move. __LINKINFO,
+__LINKEDIT, __PRELINK_INFO, __KLDDATA and __BOOTDATA are already allocated
+dynamically. __DATA is the last segment still pinned, and that pinning is what
+the collision trips on.
+
+Fix: reserve __DATA through the existing hole() walker, which returns the first
+free run in the __DATA mapping that is wide enough and, when none fits, already
+reports the largest free run. Placing it at align(code_end) instead was wrong:
+that address can sit inside a retained kext segment, which validate() then
+rejects with "Native __DATA overlaps a retained segment".
 
 Idempotent.
 
@@ -30,7 +34,7 @@ import pathlib
 import sys
 
 SCRIPT = 'kits/XnuPrelink/fileset_layout.py'
-MARK = 'patch-prelink-layout: __DATA after __KLD'
+MARK = 'patch-prelink-layout: __DATA goes into a free run'
 
 OLD = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
@@ -46,26 +50,13 @@ NEW = """        code_end = self.end('__KLD')
         # no retained kext uses them. Move XML into its own mapping below.
         self.roots.pop('__TEXT_BOOT_EXEC', None)
         code['size'] = code['filesize'] = code_end - code['va']
-        # patch-prelink-layout: __DATA after __KLD, inside the collection's own
-        # __DATA mapping when it has room. Pinning __DATA at its original va made
-        # the retained kext code + native __KLD collide with it. Every native
-        # segment is placed through self.placements and read back with
-        # translate(), and the fixups are rewritten, so the address may move.
-        data_root = self.roots['__DATA']
-        data_size = self.segment('__DATA')['size']
-        data_at = align(code_end)
-        if data_at + data_size > data_root['va'] + data_root['size'] or data_at < data_root['va']:
-            print('prelink layout: __DATA does not fit behind __KLD, reporting:', flush=True)
-            for name, address in sorted(self.placements.items()):
-                print(f'  {name:<18} va={address:#014x} size={self.span(name):#012x} '
-                      f'end={self.placements[name] + self.span(name):#014x}', flush=True)
-            print(f'  __DATA mapping      va={data_root["va"]:#014x} size={data_root["size"]:#012x} '
-                  f'end={data_root["va"] + data_root["size"]:#014x}', flush=True)
-            print(f'  __DATA wanted at    {data_at:#014x} size={data_size:#012x} '
-                  f'end={data_at + data_size:#014x}', flush=True)
-            print(f'  __KLD end / overrun {code_end:#014x} / {code_end - data_root["va"]:#x} bytes', flush=True)
-            raise ValueError('Native code would collide with collection data')
-        self.reserve('__DATA', data_at)"""
+        # patch-prelink-layout: __DATA goes into a free run of the collection's
+        # own __DATA mapping instead of its original va. Pinning it there made
+        # the retained kext code + native __KLD collide with it. Placing it at
+        # align(code_end) is also wrong: that address can fall inside a retained
+        # kext segment. hole() walks the retained segments and returns the first
+        # run wide enough, and reports the largest free run when none fits.
+        self.reserve('__DATA', self.hole('__DATA', self.segment('__DATA')['size']))"""
 
 
 def main():
@@ -82,7 +73,7 @@ def main():
         raise SystemExit(f'{SCRIPT}: Layout.__init__ block not found; upstream changed')
 
     target.write_text(text.replace(OLD, NEW, 1), encoding='utf-8')
-    print(f'{SCRIPT}: native __DATA is placed after __KLD inside the collection mapping')
+    print(f'{SCRIPT}: native __DATA is placed into a free run of its mapping')
     return 0
 
 

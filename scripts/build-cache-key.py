@@ -81,18 +81,28 @@ def main():
     h.update(b'patches:' + patch_digest.digest())
 
     # Scripts that drive compilation: a changed recipe means different objects.
+    # patch-prelink-*.py run only at the prelink step, which happens after the
+    # kernel and payload objects are built, so a change there must NOT invalidate
+    # the compile cache: doing so recompiled the 35-minute kernel on every rerun
+    # that touched a prelink fix. They are excluded from the digest below.
+    PRELINK_ONLY = {'patch-prelink-closure.py', 'patch-prelink-layout.py'}
     script_digest = hashlib.sha256()
     for base in (device / 'scripts', unixnu / 'scripts'):
         if not base.is_dir():
             continue
         for script in sorted(base.rglob('*.py')):
+            if script.name in PRELINK_ONLY:
+                continue
             script_digest.update(str(script).encode())
             script_digest.update(script.read_bytes())
     h.update(b'scripts:' + script_digest.digest())
 
     # Revisions make a pushed fix invalidate the cache even when no tracked file
     # above changed (for example a submodule bump recorded only in the commit).
-    h.update(b'device:' + git(device, 'rev-parse', 'HEAD').encode())
+    # The device HEAD is deliberately NOT folded in: every commit rewrites it,
+    # and the files that actually change the objects are digested above by
+    # content, so a HEAD-only change (a prelink patch, a workflow edit) keeps the
+    # cache and skips the 35-minute recompile.
     h.update(b'unixnu:' + git(unixnu, 'rev-parse', 'HEAD').encode())
     h.update(b'profile:' + profile.encode())
 

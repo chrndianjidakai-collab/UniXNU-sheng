@@ -334,6 +334,16 @@ jobs:
           # matching that drifts when the script's wording changes.
           python3 scripts/patch-fileset-reference.py ../UniXNU
           python3 scripts/patch-fileset-reference.py ../UniXNU
+      - name: patch the prelink dependency closure
+        # The pinned XnuPrelink submodule's dependency_closure() only strips the
+        # `!` exclusion prefix from --root arguments, not from dependencies
+        # reached through a kext's OSBundleLibraries. iPadOS 27's kernelcache
+        # contains such a `!com.apple.driver.AppleSMC` entry, so prelink dies
+        # with "Missing prelink dependency". Run twice for idempotency.
+        working-directory: device
+        run: |
+          python3 scripts/patch-prelink-closure.py ../UniXNU
+          python3 scripts/patch-prelink-closure.py ../UniXNU
       - name: patch the weak defaults
         # build-sheng-source-storage.py's weak_defaults() only covers BootLog.c
         # and only single-line declarations. BootLog.c's native_data_io_* block is

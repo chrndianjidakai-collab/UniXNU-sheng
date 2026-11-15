@@ -108,6 +108,14 @@ def main():
     h.update(b'unixnu:' + git(unixnu, 'rev-parse', 'HEAD').encode())
     h.update(b'profile:' + profile.encode())
 
+    # Bump when the cache's PATH LIST changes, not when its contents change.
+    # The old key would otherwise still match an entry that was saved without
+    # the new paths, and actions/cache only restores the entry it matched: the
+    # newly listed directories would stay empty forever. Layout 2 adds the edk2
+    # build output and its configuration, which take 20-30 minutes per run and
+    # never change between runs whose sources are identical.
+    h.update(b'layout:2')
+
     print(h.hexdigest()[:24])
     return 0
 

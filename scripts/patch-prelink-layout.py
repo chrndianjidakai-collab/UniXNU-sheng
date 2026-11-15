@@ -1,24 +1,32 @@
-"""Give the native __DATA segment room inside the collection's __DATA mapping.
+"""Allocate the native __DATA segment past the collection instead of inside it.
 
-fileset_layout.Layout pins the native __DATA at the collection's original __DATA
-address and refuses to continue when the retained kext code plus the native
-__KLD segment has run past it ("Native code would collide with collection
-data"). Placing it at align(code_end) is also wrong (that address can sit inside
-a retained kext). Using hole() on the __DATA mapping is correct but the iPadOS 27
-roots leave too little contiguous room:
+Two earlier attempts failed for the same underlying reason, and both are recorded
+here so the wrong turns are not repeated:
 
-    No room for 0x214000 bytes in __DATA: the largest free run is 0x1e8000 bytes
+  1. Pinning __DATA at the collection's original __DATA address ->
+     "Native code would collide with collection data" (the retained kext code
+     plus native __KLD already reaches that address).
+  2. Placing it at align(code_end) -> "Native __DATA overlaps a retained
+     segment" (that address falls inside a kept kext).
+  3. hole('__DATA', size) -> "No room for 0x214000 bytes in __DATA: the largest
+     free run is 0x1e8000 bytes". Growing the __DATA root does not help: the
+     widest contiguous run is bounded by a retained kext segment sitting in the
+     middle of the mapping, so a bigger root still yields the same 0x1e8000.
 
-2.08 MB is needed and 1.91 MB is the widest free run: a 0x2c000 (176 KiB)
-shortfall. __DATA is moved as one contiguous block by place_kernel
-(self.data[at:at+span] = ...), so it cannot be split.
+place_kernel moves a segment as one contiguous block
+(self.data[at:at+span] = ...), so __DATA cannot be split across runs. It needs
+its own space outside the collection's original layout.
 
-Fix: try hole('__DATA', size); when that fails, extend the __DATA root's own
-mapping as far as the next root allows and try again. validate() only rejects
-root overlaps, so growing __DATA into unclaimed space below the next root is
-legal, and the extension is bounded by that neighbour. When even the extended
-mapping cannot hold it, print every root so the shortfall is visible instead of
-guesswork. Idempotent.
+fileset_layout already does exactly that for __KLDDATA and __BOOTDATA:
+
+    segment = self.segment(name)
+    address = self.allocate(segment['size'])
+    self.reserve(name, address)
+    self.roots[name] = dict(segment, va=address, fileoff=address - cache.base, ...)
+
+Doing the same for __DATA gives it a run past every retained segment, and
+registering the root keeps validate()'s "outside collection mappings" and root
+overlap checks satisfied. Idempotent.
 
 Usage:
     python patch-prelink-layout.py <UniXNU checkout>
@@ -27,7 +35,7 @@ import pathlib
 import sys
 
 SCRIPT = 'kits/XnuPrelink/fileset_layout.py'
-MARK = 'patch-prelink-layout: place __DATA into a free run of its mapping'
+MARK = 'patch-prelink-layout: __DATA is allocated past the collection'
 
 OLD = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
@@ -43,34 +51,20 @@ NEW = """        code_end = self.end('__KLD')
         # no retained kext uses them. Move XML into its own mapping below.
         self.roots.pop('__TEXT_BOOT_EXEC', None)
         code['size'] = code['filesize'] = code_end - code['va']
-        # patch-prelink-layout: place __DATA into a free run of its mapping.
-        # Pinning it at the original va let the retained kext code + native
-        # __KLD collide with it; align(code_end) can land inside a retained kext.
-        data = self.roots['__DATA']
-        data_size = self.segment('__DATA')['size']
-        try:
-            self.reserve('__DATA', self.hole('__DATA', data_size))
-        except ValueError:
-            # The mapping is too small for one contiguous run. Grow __DATA up to
-            # the next root, which validate()'s overlap rule allows, then retry.
-            following = [s['va'] for s in self.roots.values()
-                         if s['size'] and s['va'] >= data['va'] + data['size']]
-            limit = min(following) if following else data['va'] + data['size'] + data_size
-            grow = max(data_size, limit - data['va'])
-            print(f'prelink layout: growing __DATA from {data["size"]:#x} to {grow:#x} '
-                  f'(limit {limit:#x}) for a {data_size:#x} byte segment', flush=True)
-            data['size'] = grow
-            try:
-                self.reserve('__DATA', self.hole('__DATA', data_size))
-            except ValueError as error:
-                print('prelink layout: __DATA still does not fit, roots:', flush=True)
-                for s in sorted(self.roots.values(), key=lambda s: s['va']):
-                    if s['size']:
-                        print(f'  {s["name"]:<18} va={s["va"]:#014x} size={s["size"]:#012x} '
-                              f'end={s["va"] + s["size"]:#014x}', flush=True)
-                for name, address in sorted(self.placements.items()):
-                    print(f'  placed {name:<14} va={address:#014x} size={self.span(name):#012x}', flush=True)
-                raise error"""
+        # patch-prelink-layout: __DATA is allocated past the collection, the
+        # same way __KLDDATA and __BOOTDATA below are. Pinning it at the original
+        # va collides with the retained kext code + native __KLD; align(code_end)
+        # lands inside a kept kext; hole() finds only 0x1e8000 contiguous bytes
+        # because a retained segment splits the mapping, and growing the root
+        # does not change that. place_kernel moves a segment as one block, so
+        # __DATA needs its own run outside the original layout. Registering the
+        # root keeps validate()'s coverage and overlap checks satisfied.
+        data_segment = self.segment('__DATA')
+        data_address = self.allocate(data_segment['size'])
+        self.reserve('__DATA', data_address)
+        self.roots['__DATA'] = dict(data_segment, va=data_address,
+                                    fileoff=data_address - cache.base,
+                                    filesize=data_segment['size'])"""
 
 
 def main():
@@ -87,7 +81,7 @@ def main():
         raise SystemExit(f'{SCRIPT}: Layout.__init__ block not found; upstream changed')
 
     target.write_text(text.replace(OLD, NEW, 1), encoding='utf-8')
-    print(f'{SCRIPT}: __DATA is placed in a run, growing its mapping when needed')
+    print(f'{SCRIPT}: native __DATA is allocated past the collection and registered')
     return 0
 
 

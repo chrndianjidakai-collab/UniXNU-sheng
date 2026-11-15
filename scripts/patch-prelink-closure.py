@@ -1,54 +1,37 @@
 """Fix dependency_closure() in the pinned XnuPrelink submodule.
 
-The kernel now links and reaches prelink. emit_prelink.py is invoked with
---root !com.apple.driver.AppleSMC / !com.apple.driver.AppleOnboardSerial, where
-`!` marks a dependency to exclude. dependency_closure() handles the `!` prefix
-for the ROOT list only:
+UniXNU@82b847c pins XnuPrelink@b1888c12456c46a2226d63c794465dfcee08d465. That
+revision's dependency_closure() has NO handling for `!`-prefixed exclusions:
 
-    excluded = {root[1:] for root in roots if root.startswith('!')}
-    closure, pending = set(), [root for root in roots if not root.startswith('!')]
+    closure, pending = set(), list(roots)
+    while pending:
+        identifier = pending.pop()
+        if identifier in closure:
+            continue
+        if identifier not in entries:
+            raise ValueError(f'Missing prelink dependency: {identifier}')
+        ...
 
-But excluded holds the names WITHOUT `!`, and pending is later extended with
-every retained kext's OSBundleLibraries keys. Some kext in the iPadOS 27
-kernelcache names such a dependency literally as `!com.apple.driver.AppleSMC`,
-so that string enters pending, is not equal to any excluded entry, and is not a
-CFBundleIdentifier -> `ValueError: Missing prelink dependency:
-!com.apple.driver.AppleSMC`.
+emit_prelink.py is invoked with `--root !com.apple.driver.AppleSMC` and
+`--root !com.apple.driver.AppleOnboardSerial` (the `!` means "leave this
+dependency out"). In this revision those strings are pushed straight into
+pending and fail with
+`ValueError: Missing prelink dependency: !com.apple.driver.AppleSMC`.
 
-The fix normalizes every identifier popped from pending: strip a leading `!`,
-then skip excluded names. This is idempotent.
+Fix: skip `!`-prefixed identifiers in the loop. Later revisions of the upstream
+file implement the same intent with an `excluded` set; here the minimal correct
+change is one guard. It also covers `!`-prefixed keys reached through a kext's
+OSBundleLibraries. Idempotent.
 
 Usage:
     python patch-prelink-closure.py <UniXNU checkout>
 """
 import pathlib
+import re
 import sys
 
 SCRIPT = 'kits/XnuPrelink/fileset_emit.py'
-
-OLD = """    while pending:
-        identifier = pending.pop()
-        if identifier in closure or identifier in excluded:
-            continue
-        if identifier not in entries:
-            raise ValueError(f'Missing prelink dependency: {identifier}')
-        closure.add(identifier)
-        pending.extend(entries[identifier].get('OSBundleLibraries') or {})"""
-
-NEW = """    while pending:
-        identifier = pending.pop()
-        # patch-prelink-closure.py: a `!`-prefixed dependency can also arrive
-        # from a retained kext's OSBundleLibraries, not only from --root. The
-        # excluded set stores bare names, so normalize before comparing.
-        bare = identifier[1:] if identifier.startswith('!') else identifier
-        if bare in closure or bare in excluded:
-            continue
-        if bare not in entries:
-            raise ValueError(f'Missing prelink dependency: {identifier}')
-        closure.add(bare)
-        pending.extend(entries[bare].get('OSBundleLibraries') or {})"""
-
-MARK = 'patch-prelink-closure.py: a `!`-prefixed dependency'
+MARK = 'patch-prelink-closure: skip excluded roots'
 
 
 def main():
@@ -61,11 +44,29 @@ def main():
     if MARK in text:
         print(f'{SCRIPT}: already patched')
         return 0
-    if OLD not in text:
-        raise SystemExit(f'{SCRIPT}: dependency_closure loop not found; upstream changed')
 
-    target.write_text(text.replace(OLD, NEW, 1), encoding='utf-8')
-    print(f'{SCRIPT}: dependency_closure normalizes !-prefixed dependencies')
+    # Insert the guard right after `identifier = pending.pop()` inside
+    # dependency_closure only. Match by the loop's own anchors so a differing
+    # surrounding function body does not break the patch.
+    pattern = re.compile(
+        r'(    while pending:\n'
+        r'        identifier = pending\.pop\(\)\n)'
+        r'(        if identifier in closure(?:\s+or\s+identifier in excluded)?:\n'
+        r'            continue\n)')
+    m = pattern.search(text)
+    if not m:
+        dm = re.search(r'def dependency_closure.*?(?=\ndef )', text, re.S)
+        snippet = dm.group(0)[:900] if dm else text[:900]
+        raise SystemExit(f'{SCRIPT}: dependency_closure loop not found; '
+                        f'actual text:\n{snippet}')
+
+    guard = ('        # patch-prelink-closure: skip excluded roots (also reachable\n'
+             '        # through a kext OSBundleLibraries key)\n'
+             "        if identifier.startswith('!'):\n"
+             '            continue\n')
+    replacement = m.group(1) + guard + m.group(2)
+    target.write_text(text[:m.start()] + replacement + text[m.end():], encoding='utf-8')
+    print(f'{SCRIPT}: dependency_closure skips !-prefixed roots')
     return 0
 
 

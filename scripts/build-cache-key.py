@@ -81,17 +81,19 @@ def main():
     h.update(b'patches:' + patch_digest.digest())
 
     # Scripts that drive compilation: a changed recipe means different objects.
-    # patch-prelink-*.py run only at the prelink step, which happens after the
-    # kernel and payload objects are built, so a change there must NOT invalidate
-    # the compile cache: doing so recompiled the 35-minute kernel on every rerun
-    # that touched a prelink fix. They are excluded from the digest below.
-    PRELINK_ONLY = {'patch-prelink-closure.py', 'patch-prelink-layout.py'}
+    # The patch-*.py helpers are excluded entirely: they rewrite an upstream
+    # script at runtime, and the file they rewrite is digested by the UniXNU
+    # checkout content above. Digesting the helper itself meant that adding or
+    # editing one of them (which happens on almost every prelink fix) threw away
+    # the 35-minute kernel compile even though the built objects were unchanged.
+    def is_patch_helper(name):
+        return name.startswith('patch-') and name.endswith('.py')
     script_digest = hashlib.sha256()
     for base in (device / 'scripts', unixnu / 'scripts'):
         if not base.is_dir():
             continue
         for script in sorted(base.rglob('*.py')):
-            if script.name in PRELINK_ONLY:
+            if is_patch_helper(script.name):
                 continue
             script_digest.update(str(script).encode())
             script_digest.update(script.read_bytes())

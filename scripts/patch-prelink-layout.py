@@ -1,18 +1,27 @@
-"""Instrument the fileset layout collision so the real numbers are visible.
+"""Place the native __DATA segment after __KLD and report the layout.
 
-fileset_layout.Layout.__init__ raises
-    ValueError: Native code would collide with collection data
-when the retained kext code plus the native __KLD segment runs past the
-collection's original __DATA address:
+fileset_layout.Layout.__init__ pins the native __DATA segment at the ORIGINAL
+address of the collection's __DATA and then refuses to continue when the
+retained kext code plus the native __KLD segment has already run past it:
 
     code_end = self.end('__KLD')
     if code_end > self.roots['__DATA']['va']:
         raise ValueError('Native code would collide with collection data')
+    self.reserve('__DATA', self.roots['__DATA']['va'])
 
-The message carries no numbers, so the size of the overrun is unknown and a fix
-would be guesswork. This patch keeps the failure but prints the segment layout
-first: each native segment's placed address and size, the __DATA limit, and the
-signed overrun. Idempotent.
+With the iPadOS 27 prelink roots (the 44 the board lists: the profile's 31 plus
+the USB device and host stacks) the retained kext code is large enough to reach
+that address, so the pinned __DATA cannot hold.
+
+Every native segment is placed through Layout.placements and read back through
+translate(); relocate/fixup rewrites the pointers, and __LINKINFO, __LINKEDIT,
+__PRELINK_INFO, __KLDDATA and __BOOTDATA are already allocated dynamically after
+the retained mapping. __DATA is the last segment still pinned, so this patch
+allocates it after __KLD like the others, keeps it inside the collection's
+__DATA mapping when that mapping has room, and prints the full segment table
+plus the overrun when it still does not fit.
+
+Idempotent.
 
 Usage:
     python patch-prelink-layout.py <UniXNU checkout>
@@ -21,31 +30,42 @@ import pathlib
 import sys
 
 SCRIPT = 'kits/XnuPrelink/fileset_layout.py'
-MARK = 'patch-prelink-layout: report the overrun'
+MARK = 'patch-prelink-layout: __DATA after __KLD'
 
 OLD = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
         # no retained kext uses them. Move XML into its own mapping below.
         if code_end > self.roots['__DATA']['va']:
-            raise ValueError('Native code would collide with collection data')"""
+            raise ValueError('Native code would collide with collection data')
+        self.roots.pop('__TEXT_BOOT_EXEC', None)
+        code['size'] = code['filesize'] = code_end - code['va']
+        self.reserve('__DATA', self.roots['__DATA']['va'])"""
 
 NEW = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
         # no retained kext uses them. Move XML into its own mapping below.
-        if code_end > self.roots['__DATA']['va']:
-            # patch-prelink-layout: report the overrun so a fix is not guesswork.
-            print('prelink layout before the collision:', flush=True)
+        self.roots.pop('__TEXT_BOOT_EXEC', None)
+        code['size'] = code['filesize'] = code_end - code['va']
+        # patch-prelink-layout: __DATA after __KLD, inside the collection's own
+        # __DATA mapping when it has room. Pinning __DATA at its original va made
+        # the retained kext code + native __KLD collide with it. Every native
+        # segment is placed through self.placements and read back with
+        # translate(), and the fixups are rewritten, so the address may move.
+        data_root = self.roots['__DATA']
+        data_size = self.segment('__DATA')['size']
+        data_at = align(code_end)
+        if data_at + data_size > data_root['va'] + data_root['size'] or data_at < data_root['va']:
+            print('prelink layout: __DATA does not fit behind __KLD, reporting:', flush=True)
             for name, address in sorted(self.placements.items()):
                 print(f'  {name:<18} va={address:#014x} size={self.span(name):#012x} '
                       f'end={self.placements[name] + self.span(name):#014x}', flush=True)
-            print(f'  __DATA limit        va={self.roots["__DATA"]["va"]:#014x}', flush=True)
-            print(f'  __TEXT_EXEC start   va={self.roots["__TEXT_EXEC"]["va"]:#014x} '
-                  f'size={self.roots["__TEXT_EXEC"]["size"]:#012x}', flush=True)
-            kept = [end for begin, end in self.occupied
-                    if self.roots['__TEXT_EXEC']['va'] <= begin < self.roots['__TEXT_EXEC']['va'] + self.roots['__TEXT_EXEC']['size']]
-            print(f'  retained kext ends  max={max(kept) if kept else 0:#014x} count={len(kept)}', flush=True)
-            print(f'  overrun             {code_end - self.roots["__DATA"]["va"]:#x} bytes', flush=True)
-            raise ValueError('Native code would collide with collection data')"""
+            print(f'  __DATA mapping      va={data_root["va"]:#014x} size={data_root["size"]:#012x} '
+                  f'end={data_root["va"] + data_root["size"]:#014x}', flush=True)
+            print(f'  __DATA wanted at    {data_at:#014x} size={data_size:#012x} '
+                  f'end={data_at + data_size:#014x}', flush=True)
+            print(f'  __KLD end / overrun {code_end:#014x} / {code_end - data_root["va"]:#x} bytes', flush=True)
+            raise ValueError('Native code would collide with collection data')
+        self.reserve('__DATA', data_at)"""
 
 
 def main():
@@ -62,7 +82,7 @@ def main():
         raise SystemExit(f'{SCRIPT}: Layout.__init__ block not found; upstream changed')
 
     target.write_text(text.replace(OLD, NEW, 1), encoding='utf-8')
-    print(f'{SCRIPT}: the collision now reports the segment layout and overrun')
+    print(f'{SCRIPT}: native __DATA is placed after __KLD inside the collection mapping')
     return 0
 
 

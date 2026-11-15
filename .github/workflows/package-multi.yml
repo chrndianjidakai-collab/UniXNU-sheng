@@ -334,6 +334,20 @@ jobs:
           # matching that drifts when the script's wording changes.
           python3 scripts/patch-fileset-reference.py ../UniXNU
           python3 scripts/patch-fileset-reference.py ../UniXNU
+      - name: advance the XnuPrelink submodule
+        # UniXNU@82b847c pins XnuPrelink@b1888c12 (2026-11-01), which predates
+        # two fixes the iPadOS 27 profile needs: `!`-prefixed exclusion roots in
+        # dependency_closure() and placing native __TEXT by its sections (the old
+        # revision asks for the whole padded 0x224000-byte __TEXT inside
+        # __PRELINK_TEXT and fails with "No room"). 440589b0 (2026-11-11) has
+        # both, keeps the same emit_prelink.py CLI and only adds one file.
+        # Fetch that exact commit into the checked-out submodule and pin the
+        # working tree to it; the patch below remains as a harmless fallback.
+        run: |
+          cd UniXNU/kits/XnuPrelink
+          git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
+          git checkout --detach FETCH_HEAD
+          git rev-parse HEAD
       - name: patch the prelink dependency closure
         # The pinned XnuPrelink submodule's dependency_closure() only strips the
         # `!` exclusion prefix from --root arguments, not from dependencies

@@ -348,6 +348,16 @@ jobs:
           git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
           git checkout --detach FETCH_HEAD
           git rev-parse HEAD
+      - name: raise the metal bridge cargo timeout
+        # The GPU Metal bridge builds the Rust standard library from source
+        # (-Z build-std) on a cold cache, and 1800 s was not enough on a hosted
+        # macOS runner: the run died with subprocess.TimeoutExpired and reported
+        # only "returned non-zero exit status 1". The bound is a safety net, not
+        # a budget, so 5400 s costs time only when the build is truly stuck.
+        working-directory: device
+        run: |
+          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
       - name: report the prelink layout overrun
         # The collision check in fileset_layout.Layout.__init__ carries no
         # numbers, so the size of the overrun is unknown. Keep the failure but

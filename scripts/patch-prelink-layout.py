@@ -51,6 +51,20 @@ import sys
 SCRIPT = 'kits/XnuPrelink/fileset_layout.py'
 MARK = "self.roots['__NDATA'] = dict(data_segment"
 
+OLD_SEG = """    def segment(self, name):
+        return next(s for s in self.native.segments if s['name'] == name)"""
+
+NEW_SEG = """    def segment(self, name):
+        # patch-prelink-layout: __NDATA is the registered root name for the
+        # native __DATA run allocated past the collection. patch_headers()
+        # looks the source command of every non-original root up by root name
+        # (for maxprot/initprot), and a lookup of '__NDATA' in the native
+        # segments would raise StopIteration and abort the emit; map it back
+        # to the native segment it stands for.
+        if name == '__NDATA':
+            name = '__DATA'
+        return next(s for s in self.native.segments if s['name'] == name)"""
+
 OLD_COLLIDE = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
         # no retained kext uses them. Move XML into its own mapping below.
@@ -132,9 +146,12 @@ def main():
         raise SystemExit(f'{SCRIPT}: collide-check block not found; upstream changed')
     if OLD_ALLOC not in text:
         raise SystemExit(f'{SCRIPT}: __KLDDATA/__BOOTDATA block not found; upstream changed')
+    if OLD_SEG not in text:
+        raise SystemExit(f'{SCRIPT}: segment() lookup not found; upstream changed')
 
     text = text.replace(OLD_COLLIDE, NEW_COLLIDE, 1)
     text = text.replace(OLD_ALLOC, NEW_ALLOC, 1)
+    text = text.replace(OLD_SEG, NEW_SEG, 1)
     target.write_text(text, encoding='utf-8')
     print(f'{SCRIPT}: native __DATA allocated past the collection under an extra __NDATA root')
     return 0

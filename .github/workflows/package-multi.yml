@@ -417,6 +417,8 @@ jobs:
             device/deps
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
             uefi-sheng
           key: build-${{ steps.build-cache.outputs.key }}
       - name: report the build cache
@@ -488,6 +490,8 @@ jobs:
             device/deps
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
             UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
             uefi-sheng
           key: build-${{ steps.build-cache.outputs.key }}
       - name: installation seed backup

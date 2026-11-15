@@ -92,17 +92,32 @@ OLD_COLLIDE = """        code_end = self.end('__KLD')
 NEW_COLLIDE = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
         # no retained kext uses them. Move XML into its own mapping below.
-        # patch-prelink-layout: the collection's __DATA va is no longer a bound
-        # native code can stay below — retained kext code plus native __KLD
-        # already reaches past it — and hole() finds only 0x1e8000 contiguous
-        # bytes because a retained segment splits the mapping. The native
-        # __DATA segment is instead allocated past the collection, registered
-        # as an extra __NDATA root (see below), so the collide check and the
-        # old-va reserve are dropped here. roots['__DATA'] itself stays put:
-        # the collection's own __DATA chain sites and the top-level __DATA LC
-        # (rewritten by patch_headers) both depend on it.
         self.roots.pop('__TEXT_BOOT_EXEC', None)
-        code['size'] = code['filesize'] = code_end - code['va']"""
+        code['size'] = code['filesize'] = code_end - code['va']
+        # patch-prelink-layout: on iPadOS 27 the retained kext code plus the
+        # native __KLD ends ABOVE the collection's __DATA start, which upstream
+        # rejects with 'Native code would collide with collection data'. That
+        # head of __DATA is the old kernel boot segment and the prelink XML —
+        # the same region the comment above calls replaceable — so trim the
+        # root's front to the end of the native code instead of aborting. Every
+        # later mapping (__LINKEDIT and the allocated roots) keeps its relative
+        # order, and the trimmed bytes are exactly those the native kernel now
+        # occupies. Trailing bytes of __DATA stay mapped and keep their chain
+        # sites; a site inside the trimmed head would surface in
+        # rebuild_linkedit as 'Fixup is not within one root mapping'.
+        data_root = self.roots['__DATA']
+        data_end = data_root['va'] + data_root['size']
+        if code_end > data_root['va']:
+            if code_end >= data_end:
+                raise ValueError(f'Native code ends at {code_end:#x}, past the whole '
+                                 f'__DATA mapping that ends at {data_end:#x}')
+            print(f'  __DATA front trimmed by {code_end - data_root["va"]:#x} bytes '
+                  f'to the end of the native code', flush=True)
+            data_root['va'] = code_end
+            data_root['size'] = data_end - code_end
+            data_root['fileoff'] = code_end - cache.base
+            data_root['filesize'] = data_root['size']
+        self.reserve('__DATA', data_root['va'])"""
 
 OLD_ALLOC = """        for name in ('__KLDDATA', '__BOOTDATA'):
             segment = self.segment(name)

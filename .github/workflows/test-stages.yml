@@ -174,7 +174,12 @@ jobs:
           # flows straight through to the CLI: kernel copies the native kernel to
           # kernel.macho without kernelcache kexts, and every later stage
           # (package, firmware, payload, pack, verify) runs against it.
-          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng --skip-prelink)
+          # --init-data: this probe carries no preserved Data seed (the 6-lane
+          # workflow restores one from cache/artifacts before building); without
+          # it the payload step refuses to run with "No preserved Data seed".
+          # A first-installation seed is generated and later cached by the seed
+          # artifact upload below, so subsequent probes reuse it.
+          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng --skip-prelink --init-data)
           scripts/package.sh "${args[@]}"
       - name: build userdata-root.img
         working-directory: UniXNU
@@ -207,6 +212,19 @@ jobs:
             UniXNU/out/sheng/*/*/logs/*.log
             UniXNU/out/sheng/*/*/package.manifest.json
             UniXNU/out/sheng/*/*/userdata/userdata-root.json
+      - name: upload installation seed for later runs
+        # --init-data generated a Data seed; keep it as an artifact so the next
+        # probe (and, if it ever needs one, the 6-lane run) can restore instead
+        # of regenerating. Mirrors the 6-lane seed artifacts.
+        if: always() && hashFiles('UniXNU/out/sheng/*/*/runtime/data.dbr') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: installation-seed-probe
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            UniXNU/out/sheng/*/*/runtime/data.dbr
+            UniXNU/out/sheng/*/*/runtime/inputs.json
       - name: upload probe images
         if: always()
         uses: actions/upload-artifact@v4

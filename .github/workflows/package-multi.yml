@@ -348,6 +348,14 @@ jobs:
           git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
           git checkout --detach FETCH_HEAD
           git rev-parse HEAD
+      - name: report the prelink layout overrun
+        # The collision check in fileset_layout.Layout.__init__ carries no
+        # numbers, so the size of the overrun is unknown. Keep the failure but
+        # print every placed segment, the __DATA limit and the signed overrun.
+        working-directory: device
+        run: |
+          python3 scripts/patch-prelink-layout.py ../UniXNU
+          python3 scripts/patch-prelink-layout.py ../UniXNU
       - name: patch the prelink dependency closure
         # The pinned XnuPrelink submodule's dependency_closure() only strips the
         # `!` exclusion prefix from --root arguments, not from dependencies

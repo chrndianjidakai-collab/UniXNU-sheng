@@ -65,6 +65,21 @@ NEW_SEG = """    def segment(self, name):
             name = '__DATA'
         return next(s for s in self.native.segments if s['name'] == name)"""
 
+OLD_VALIDATE = """        ordered = sorted((s['va'], s['va'] + s['size']) for s in self.roots.values() if s['size'])
+        if any(a[1] > b[0] for a, b in zip(ordered, ordered[1:])):
+            raise ValueError('Root mappings overlap')"""
+
+NEW_VALIDATE = """        ordered = sorted((s['va'], s['va'] + s['size']) for s in self.roots.values() if s['size'])
+        # patch-prelink-layout: report every root interval and the exact
+        # overlapping pair instead of a bare 'Root mappings overlap', so the
+        # next failure names its culprits instead of costing a blind rerun.
+        overlap = next(((a, b) for a, b in zip(ordered, ordered[1:]) if a[1] > b[0]), None)
+        if overlap:
+            for name, s in sorted(self.roots.items(), key=lambda kv: kv[1]['va']):
+                if s['size']:
+                    print(f'  root {name:20s} va={s["va"]:#014x} end={s["va"] + s["size"]:#014x}', flush=True)
+            raise ValueError(f'Root mappings overlap: {overlap[0][1]:#x} crosses {overlap[1][0]:#x}')"""
+
 OLD_COLLIDE = """        code_end = self.end('__KLD')
         # The old kernel boot segment and prelink XML are replaceable, provided
         # no retained kext uses them. Move XML into its own mapping below.
@@ -148,10 +163,13 @@ def main():
         raise SystemExit(f'{SCRIPT}: __KLDDATA/__BOOTDATA block not found; upstream changed')
     if OLD_SEG not in text:
         raise SystemExit(f'{SCRIPT}: segment() lookup not found; upstream changed')
+    if OLD_VALIDATE not in text:
+        raise SystemExit(f'{SCRIPT}: validate overlap check not found; upstream changed')
 
     text = text.replace(OLD_COLLIDE, NEW_COLLIDE, 1)
     text = text.replace(OLD_ALLOC, NEW_ALLOC, 1)
     text = text.replace(OLD_SEG, NEW_SEG, 1)
+    text = text.replace(OLD_VALIDATE, NEW_VALIDATE, 1)
     target.write_text(text, encoding='utf-8')
     print(f'{SCRIPT}: native __DATA allocated past the collection under an extra __NDATA root')
     return 0

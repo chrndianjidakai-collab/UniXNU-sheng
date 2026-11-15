@@ -1,0 +1,230 @@
+name: test-stages
+
+# One-lane probe that runs the full `unixnu release` pipeline with
+# --skip-prelink: the kernel step copies the built native kernel to
+# kernel.macho without adding kernelcache kexts, so every stage AFTER prelink
+# (package, firmware, payload, pack/bootimg, verify/manifest, userdata) gets
+# exercised even while the prelink layout fix is still being validated by the
+# 6-lane run. A probe success means the post-prelink stages are sound and the
+# next 6-lane run fails, if at all, only inside prelink itself.
+#
+# Same checkout layout, same patch series and the same build-cache key as
+# package-6lane: when the 6-lane run saves its tree, this probe restores it and
+# the 35-minute kernel compile is skipped. It queues behind the 6-lane run's
+# lanes for a macOS runner, so the two never compete for the build cache.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile"
+        type: choice
+        options: ["27", "26", "17"]
+        default: "27"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: skip-prelink-probe
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          path: UniXNU
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          path: uefi-sheng
+          submodules: recursive
+      - name: tools
+        run: |
+          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+          ok=1
+          for t in clang xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \\
+                   mformat mcopy ipsw; do
+            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
+          done
+          for t in lld-link llvm-lib llvm-rc llvm-nm llvm-objcopy; do
+            [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
+          done
+          [ "$ok" = 1 ]
+      - name: repair the pinned Mesa series
+        working-directory: device
+        run: python3 scripts/repair-mesa-series.py ../UniXNU
+      - name: fetch the Wi-Fi supplicant sources
+        working-directory: device/drivers/Ath12kWifi
+        timeout-minutes: 45
+        run: |
+          set -x
+          python3 --version
+          ls -l tools/fetch-sources.py tools/source-lock.json
+          python3 ../../scripts/fix-ath12k-sparse-paths.py .
+          python3 ../../scripts/patch-fetch-sources.py .
+          python3 tools/fetch-sources.py
+          echo '--- verify the check that failed before now passes ---'
+          python3 tools/fetch-sources.py --check
+          du -sh deps/* 2>/dev/null || true
+      - name: advance the sm8550 kit pin
+        working-directory: device
+        run: |
+          python3 scripts/advance-sm8550-kit.py ../UniXNU .
+          echo '--- components.toml ---'
+          grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path' || true
+          echo '--- feeds.toml ---'
+          grep -A3 'name = "sm8550"' feeds.toml || true
+          python3 - <<'PY'
+          import re, sys, pathlib
+          comp = pathlib.Path('../UniXNU/components.toml').read_text(encoding='utf-8')
+          feeds = pathlib.Path('feeds.toml').read_text(encoding='utf-8')
+          m = re.search(r'id = "Sm8550Platform".*?revision = "([0-9a-f]{40})"', comp, re.S)
+          f = re.search(r'name = "sm8550".*?commit = "([0-9a-f]{40})"', feeds, re.S)
+          if not m or not f:
+              sys.exit('could not read the Sm8550Platform revision or the feeds commit')
+          if m.group(1) != f.group(1):
+              sys.exit(f'pin mismatch: components.toml {m.group(1)[:8]} vs feeds.toml {f.group(1)[:8]}')
+          if m.group(1) == 'a9f45dc60c035084b95463781538380f4c3606c9':
+              sys.exit('the helper did not advance the pin; the kit would miss Sm8550GeniUart.h')
+          print(f'OK   both files pin sm8550 to {m.group(1)[:8]}')
+          PY
+      - name: stage the proprietary firmware blobs
+        working-directory: device
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/stage-proprietary.py .
+          echo '--- confirm all three digests ---'
+          python3 scripts/stage-proprietary.py . --check
+          ls -l .cache/firmware/nanosic .cache/firmware/novatek .cache/firmware/qcom/sm8550/sheng
+      - name: patch the fileset reference build
+        working-directory: device
+        run: |
+          python3 scripts/patch-fileset-reference.py ../UniXNU
+          python3 scripts/patch-fileset-reference.py ../UniXNU
+      - name: advance the XnuPrelink submodule
+        run: |
+          cd UniXNU/kits/XnuPrelink
+          git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
+          git checkout --detach FETCH_HEAD
+          git rev-parse HEAD
+      - name: raise the metal bridge cargo timeout
+        working-directory: device
+        run: |
+          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+      - name: patch the prelink layout (kept so the tree matches the 6-lane run)
+        working-directory: device
+        run: |
+          python3 scripts/patch-prelink-layout.py ../UniXNU
+          python3 scripts/patch-prelink-layout.py ../UniXNU
+      - name: patch the prelink dependency closure
+        working-directory: device
+        run: |
+          python3 scripts/patch-prelink-closure.py ../UniXNU
+          python3 scripts/patch-prelink-closure.py ../UniXNU
+      - name: patch the weak defaults
+        working-directory: device
+        run: |
+          python3 scripts/patch-weak-defaults.py ../UniXNU
+          python3 scripts/patch-weak-defaults.py ../UniXNU
+      - name: build cache identity
+        id: build-cache
+        working-directory: device
+        run: |
+          key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os }}")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "build cache key: $key"
+      - name: restore the build cache
+        id: build-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            device/deps
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+            uefi-sheng
+          key: build-${{ steps.build-cache.outputs.key }}
+      - name: report the build cache
+        run: |
+          echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
+          du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
+      - name: release with skip-prelink
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          OS_PROFILE: ${{ inputs.os }}
+        run: |
+          # package.sh execs `unixnu release -D "$DEVICE" "$@"`, so --skip-prelink
+          # flows straight through to the CLI: kernel copies the native kernel to
+          # kernel.macho without kernelcache kexts, and every later stage
+          # (package, firmware, payload, pack, verify) runs against it.
+          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng --skip-prelink)
+          scripts/package.sh "${args[@]}"
+      - name: build userdata-root.img
+        working-directory: UniXNU
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+        run: |
+          ./unixnu build userdata --dry-run
+          ./unixnu build userdata
+      - name: report
+        if: always()
+        working-directory: UniXNU
+        run: |
+          echo "## probe stages" >> "$GITHUB_STEP_SUMMARY"
+          for f in out/sheng/*/*/userdata/userdata-root.json; do
+            [ -f "$f" ] || continue
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            head -c 8000 "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          ls -l out/sheng/*/*/userdata/ out/sheng/*/*/boot/ out/sheng/*/*/kernel/ out/sheng/*/*/payload/ 2>/dev/null || true
+      - name: upload probe logs and manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-logs
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            UniXNU/out/sheng/*/*/logs/*.log
+            UniXNU/out/sheng/*/*/package.manifest.json
+            UniXNU/out/sheng/*/*/userdata/userdata-root.json
+      - name: upload probe images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-images
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            UniXNU/out/sheng/*/*/boot/boot.img
+            UniXNU/out/sheng/*/*/kernel/kernel.macho
+            UniXNU/out/sheng/*/*/payload/payload.img
+      - name: save the build cache
+        if: always() && steps.build-cache.outputs.key != '' && steps.build-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            device/deps
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+            uefi-sheng
+          key: build-${{ steps.build-cache.outputs.key }}

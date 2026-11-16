@@ -29,6 +29,29 @@ import sys
 SCRIPT = 'package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c'
 MARK = 'patch-ramdisk-screen-log'
 
+ENTRY_OLD = """UniXNURamDiskDxeEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_HOB_GUID_TYPE  *Hob;
+  UINT64             Dtb;
+"""
+
+ENTRY_NEW = """UniXNURamDiskDxeEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_HOB_GUID_TYPE  *Hob;
+  UINT64             Dtb;
+  {  /* patch-ramdisk-screen-log: unconditional entry marker */
+    UINTN _h;
+    Print (L"RAMDISK: driver entry reached\\n");
+    for (_h = 0; _h < 60; _h++) { gBS->Stall (1000000); }
+  }
+"""
+
 HOB_OLD = """  Hob = GetFirstGuidHob (&mEntryArgHobGuid);
   if (Hob == NULL) {
     DEBUG ((DEBUG_ERROR, "UNIXNURAMDISK: no entry argument HOB\\n"));
@@ -92,6 +115,7 @@ def main():
         return 0
 
     pairs = [
+        ('entry marker', ENTRY_OLD, ENTRY_NEW),
         ('HOB branch', HOB_OLD, HOB_NEW),
         ('device-tree check', DT_OLD, DT_NEW),
         ('initrd check', INITRD_OLD, INITRD_NEW),

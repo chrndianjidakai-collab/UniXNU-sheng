@@ -442,14 +442,31 @@ jobs:
         # Run twice for the script's own idempotency check.
         working-directory: device
         run: |
+          # Two things have to change together, both in the uefi-sheng checkout:
+          #
+          # 1. sheng.dsc's [Components] must list the disk and file-system
+          #    modules. sheng.fdf's Include/DXE.inc already places them in
+          #    FvMain, but EDK II only compiles what the DSC declares, so the
+          #    INF lines had nothing behind them.
+          # 2. the flash device must have room for them. sheng.toml carries
+          #    [uefi_fd] size = 0x300000 (3 MiB), which the SEC/DxeCore skeleton
+          #    fills exactly; firmware.build() then rejects any other size. The
+          #    vendor's own sheng UEFI is a 44.51 MB PE, so 3 MiB is a leftover
+          #    from the devices this template was copied from, not a sheng
+          #    limit.
+          #
+          # The fix never touches sheng.fdf: its INF lines are already there and
+          # a duplicate makes GenFv abort with
+          #   "the 23th file and 44th file have the same file GUID".
+          # Run each twice for its own idempotency check.
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
+          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
+          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
           # The build cache restores the whole uefi-sheng checkout, Build/
           # included. EDK II treats that directory as its incremental state and
-          # would reuse the module set recorded before the [Components] lines
-          # above existed, so the four new modules are never compiled and the
-          # volume stays at the 3.0 MB skeleton. Drop the tree so the firmware
-          # step builds the module list this DSC names.
+          # would reuse the module set recorded before these edits, so the new
+          # modules are never compiled. Drop the tree to force a full build.
           rm -rf ../uefi-sheng/Build
       - name: restore the sheng firmware inputs
         # archive (board.toml [firmware.image]), extracts only the porting

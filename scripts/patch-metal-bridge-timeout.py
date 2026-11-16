@@ -1,61 +1,72 @@
-"""Raise the cargo timeout in build-adreno-metal-bridge.py.
+"""Raise the cargo build bound for the Adreno Metal bridge.
 
-The GPU Metal bridge is built by cargo with `-Z build-std=std,panic_unwind` for
---target ios27, which compiles the Rust standard library from source on every
-cold cache. The script hard-codes
+Older UniXNU checkouts bound `cargo build` for the Rust standard library
+(`-Z build-std`) at 1800 s, which a cold hosted-runner build exceeded; the run
+died with subprocess.TimeoutExpired and reported only "returned non-zero exit
+status 1".
 
-    subprocess.run(cargo + [...], timeout=1800)
+Upstream later raised the bound itself, so this script now accepts three
+states and only fails when the source is neither patched, nor already raised,
+nor recognisably the old shape:
 
-30 minutes is not enough on a hosted macOS runner for the first build, so the
-run dies with:
+    already patched by us      -> "already patched"
+    upstream raised it         -> "upstream already raised the bound"  (no change)
+    old 1800 s shape found     -> raise it
+    anything else              -> fail, so an upstream rewrite is noticed
 
-    subprocess.TimeoutExpired: Command '['cargo', '+1.98.0', '-Z',
-      'build-std=std,panic_unwind', 'build', '--release', ...]
-      timed out after 1800 seconds
-
-and that surfaces as "build-adreno-metal-bridge.py returned non-zero exit
-status 1", far from the real cause. The wait is a safety bound, not a budget:
-the build is deterministic and a longer bound only costs time when the build is
-genuinely stuck. Raise it to 5400 seconds (90 minutes), which covers a cold
-build-std run with margin. Idempotent.
+Idempotent.
 
 Usage:
     python patch-metal-bridge-timeout.py <UniXNU checkout>
 """
 import pathlib
+import re
 import sys
 
 SCRIPT = 'scripts/build-adreno-metal-bridge.py'
-MARK = 'patch-metal-bridge-timeout: 5400'
-
-OLD = """    result = subprocess.run(cargo + ['build', '--release', '--manifest-path', manifest, '--target', triple,
-                             '--target-dir', target_dir], env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=1800)"""
-
-NEW = """    # patch-metal-bridge-timeout: 5400. --target ios27 passes
-    # -Z build-std=std,panic_unwind, so the Rust standard library is compiled
-    # from source on a cold cache; 1800 s was not enough on a hosted macOS
-    # runner and the run died with subprocess.TimeoutExpired, which surfaced
-    # only as "returned non-zero exit status 1". This is a safety bound, not a
-    # budget: a longer bound costs time only when the build is truly stuck.
-    result = subprocess.run(cargo + ['build', '--release', '--manifest-path', manifest, '--target', triple,
-                             '--target-dir', target_dir], env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=5400)"""
+MARK = 'patch-metal-bridge-timeout'
+BOUND = 5400
 
 
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()
     target = root / SCRIPT
     if not target.is_file():
-        raise SystemExit(f'{target} missing')
+        print(f'{SCRIPT}: not present in this checkout; nothing to do')
+        return 0
     text = target.read_text(encoding='utf-8')
 
     if MARK in text:
         print(f'{SCRIPT}: already patched')
         return 0
-    if OLD not in text:
-        raise SystemExit(f'{SCRIPT}: cargo subprocess.run not found; upstream changed')
 
-    target.write_text(text.replace(OLD, NEW, 1), encoding='utf-8')
-    print(f'{SCRIPT}: the cargo build bound is 5400 s instead of 1800 s')
+    # The bound appears on the subprocess.run that invokes cargo. Take whatever
+    # timeout it carries and only replace it when it is below BOUND, so an
+    # upstream value that is already large enough is left alone.
+    matches = list(re.finditer(r'timeout=(\d+)\)', text))
+    cargo = [m for m in matches
+             if 'cargo' in text[max(0, m.start() - 600):m.start()]
+             and 'build' in text[max(0, m.start() - 600):m.start()]]
+    if not cargo:
+        raise SystemExit(f'{SCRIPT}: no cargo subprocess.run timeout; upstream changed')
+
+    current = int(cargo[0].group(1))
+    if current >= BOUND:
+        print(f'{SCRIPT}: upstream already raised the bound to {current}s; no change')
+        return 0
+
+    at = cargo[0].start(1)
+    end = cargo[0].end(1)
+    text = text[:at] + str(BOUND) + text[end:]
+    # Record why, next to the value.
+    line_start = text.rfind('\n', 0, at) + 1
+    text = (text[:line_start]
+            + f'    # {MARK}: {BOUND} s. A cold hosted-runner build of the Rust '
+              f'standard library exceeded the old {current} s; the bound is a '
+              f'safety net, not a budget.\n'
+            + text[line_start:])
+    target.write_text(text, encoding='utf-8')
+    print(f'{SCRIPT}: cargo timeout {current}s -> {BOUND}s')
     return 0
 
 

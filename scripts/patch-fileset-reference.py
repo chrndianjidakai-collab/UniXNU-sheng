@@ -90,6 +90,13 @@ STUB_V5 = """    # patch-fileset-reference.py widened this prefix set (see that 
 
 STUB_V4 = STUB_OLD
 
+# Upstream grew the prefix list itself and reformatted the call (no space after
+# the commas, an extra boot_cache_input_capture entry). Match that shape too:
+# the intent is the same — a curated prefix list that misses the board's own
+# weak_import symbols — and the replacement below still derives the set from the
+# linker output.
+STUB_V6_UPSTREAM = """    stub_names = sorted(set(re.findall(r'^\\s+"(_(?:native_[a-z0-9_]+|boot_log_rounds|boot_cache_input_capture))"', build_log, re.M)))"""
+
 STUB_MARK = 'patch-fileset-reference.py: stub every symbol'
 
 
@@ -107,7 +114,7 @@ def main():
 
     if STUB_MARK not in text:
         replaced = False
-        for variant in (STUB_V5, STUB_V4):
+        for variant in (STUB_V5, STUB_V4, STUB_V6_UPSTREAM):
             if variant in text:
                 text = text.replace(variant, STUB_NEW, 1)
                 changed.append('stubs every symbol the linker reports undefined')

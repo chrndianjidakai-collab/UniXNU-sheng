@@ -1,648 +1,501 @@
 name: package-6lane
-
-# scripts/package.sh of this repository on a macOS runner, with the UniXNU and uefi-sheng
-# checkouts beside it, the layout board.toml names. The platform seed comes from the
-# repository secret UNIXNU_UNIQUE_CHIP_ID and is baked into the images, so the run's
-# artifacts belong to one device alone: download them, then delete the run.
-#
-# SIX job lanes on purpose. GitHub-hosted macOS arm64 capacity is scarce, and a job
-# that loses the race sits in "Waiting for a runner" for the full 15-minute
-# acquisition cap before GitHub gives up with "The job was not acquired by Runner of
-# type hosted". A single lane therefore loses the whole night when it is unlucky.
-# Each lane is an independent queue ticket for identical work, so the build starts
-# as soon as any one lane is picked up; the losers are cancelled by the driver. All
-# lanes publish distinct artifact names so they never collide.
-on:
+true:
   workflow_dispatch:
     inputs:
       os:
-        description: "OS profile of the images"
+        description: OS profile of the images
         type: choice
-        options: ["27", "26", "17"]
-        default: "27"
+        options:
+        - '27'
+        - '26'
+        - '17'
+        default: '27'
       init_data:
-        description: "Create a NEW installation seed if no saved seed exists (iPadOS 27 only)"
+        description: Create a NEW installation seed if no saved seed exists (iPadOS
+          27 only)
         type: boolean
         default: false
       data_seed_url:
-        description: "Optional original data.dbr URL for an existing installation; otherwise use the saved cache"
+        description: Optional original data.dbr URL for an existing installation;
+          otherwise use the saved cache
         type: string
       data_seed_sha256:
-        description: "Required SHA-256 when data_seed_url is supplied"
+        description: Required SHA-256 when data_seed_url is supplied
         type: string
-
 permissions:
   contents: read
-
 jobs:
   build:
     name: lane-${{ matrix.lane }}
     runs-on: macos-26
     timeout-minutes: 360
     strategy:
-      # Every lane competes independently; one failing must not cancel the others.
       fail-fast: false
       max-parallel: 6
       matrix:
-        lane: [0, 1, 2, 3, 4, 5]
+        lane:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
     steps:
-      - name: note the lane
-        run: |
-          echo "lane ${{ matrix.lane }} acquired a runner at $(date -u +%FT%TZ)"
-          echo "lane=${{ matrix.lane }}" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@v4
-        with:
-          path: device
-          submodules: recursive
-      - uses: actions/checkout@v4
-        with:
-          repository: UniXNU/UniXNU
-          ref: 9931232fd68b8ae1db0abd957ecba417f1996e52 # Wi-Fi runtime and Data firmware integration
-          path: UniXNU
-          submodules: recursive
-      - uses: actions/checkout@v4
-        with:
-          repository: UniXNU/uefi-sheng
-          path: uefi-sheng
-          submodules: recursive
-      - name: tools
-        run: |
-          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
-          {
-            echo "$HOME/.cargo/bin"
-            echo "/opt/homebrew/opt/llvm/bin"
-            echo "/opt/homebrew/opt/lld/bin"
-            echo "/opt/homebrew/opt/bison/bin"
-          } >> "$GITHUB_PATH"
-          rustup toolchain install 1.98.0 --profile minimal --component rust-src
-          ok=1
-          for t in clang xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \
-                   mformat mcopy ipsw; do
-            command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
-          done
-          for t in lld-link llvm-lib llvm-rc llvm-nm llvm-objcopy; do
-            [ -f "/opt/homebrew/opt/llvm/bin/$t" ] || [ -f "/opt/homebrew/opt/lld/bin/$t" ] || { echo "missing tool: $t"; ok=0; }
-          done
-          [ "$ok" = 1 ]
-      - name: platform seed
-        env:
-          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
-        run: |
-          if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
-            echo 'Set the repository secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.' >&2
-            exit 1
-          fi
-      - name: seed cache identity
-        id: seed-key
-        env:
-          SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, os
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write('key=data-seed-v1-' + hashlib.sha256(os.environ['SEED'].encode()).hexdigest()[:16] + '\n')
-          PY
-      - uses: actions/cache/restore@v4
-        id: data-cache
-        if: inputs.os == '27'
-        with:
-          path: |
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
-          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
-      - name: prepare preserved Data seed
-        # Three sources, in order, so a missing cache never stops the build:
-        #   1. seed/<profile>/data.dbr committed in this repository (stable)
-        #   2. the newest installation-seed artifact, one-day retention
-        #   3. the data_seed_url dispatch input when one is supplied
-        # A FIRST installation may instead select init_data.
-        if: inputs.os == '27'
-        env:
-          INIT_DATA: ${{ inputs.init_data }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, io, json, os, pathlib, shutil, urllib.error, urllib.request, zipfile
-          profile = 'ipados-27.0.1-24A446'
-          work = pathlib.Path('UniXNU/out/sheng') / profile / 'sheng_ipados27' / 'runtime'
-          seed = work / 'data.dbr'
-          stamp = work / 'inputs.json'
-          inputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text()).get('inputs') or {}
+    - name: note the lane
+      run: 'echo "lane ${{ matrix.lane }} acquired a runner at $(date -u +%FT%TZ)"
 
-          if not seed.is_file():
-              committed = pathlib.Path('seed') / profile
-              if (committed / 'data.dbr').is_file():
-                  work.mkdir(parents=True, exist_ok=True)
-                  shutil.copyfile(committed / 'data.dbr', seed)
-                  if (committed / 'inputs.json').is_file() and not stamp.is_file():
-                      shutil.copyfile(committed / 'inputs.json', stamp)
-                  print('seed: copied from seed/' + profile)
+        echo "lane=${{ matrix.lane }}" >> "$GITHUB_STEP_SUMMARY"
 
-          if not seed.is_file():
-              token = os.environ.get('GITHUB_TOKEN', '')
-              try:
-                  req = urllib.request.Request(
-                      'https://api.github.com/repos/chrndianjidakai-collab/UniXNU-sheng/actions/artifacts?per_page=100',
-                      headers={'Authorization': 'Bearer ' + token,
-                               'Accept': 'application/vnd.github+json',
-                               'User-Agent': 'unixnu-seed-restore'})
-                  with urllib.request.urlopen(req, timeout=60) as reply:
-                      listing = json.loads(reply.read())
-                  candidates = [a for a in listing.get('artifacts', [])
-                                if a['name'].startswith('installation-seed-27') and not a.get('expired')]
-              except (urllib.error.URLError, ValueError) as error:
-                  candidates = []
-                  print('seed: artifact listing failed:', error)
-              if candidates:
-                  newest = max(candidates, key=lambda a: a['created_at'])
+        '
+    - uses: actions/checkout@v4
+      with:
+        path: device
+        submodules: recursive
+    - uses: actions/checkout@v4
+      with:
+        repository: UniXNU/UniXNU
+        ref: 9931232fd68b8ae1db0abd957ecba417f1996e52
+        path: UniXNU
+        submodules: recursive
+    - uses: actions/checkout@v4
+      with:
+        repository: UniXNU/uefi-sheng
+        path: uefi-sheng
+        submodules: recursive
+    - name: tools
+      run: "brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools\
+        \ bison pkgconf rustup blacktop/tap/ipsw\n{\n  echo \"$HOME/.cargo/bin\"\n\
+        \  echo \"/opt/homebrew/opt/llvm/bin\"\n  echo \"/opt/homebrew/opt/lld/bin\"\
+        \n  echo \"/opt/homebrew/opt/bison/bin\"\n} >> \"$GITHUB_PATH\"\nrustup toolchain\
+        \ install 1.98.0 --profile minimal --component rust-src\nok=1\nfor t in clang\
+        \ xcodebuild make git ninja cmake dtc fdtget fdtput aea compression_tool \\\
+        \n         mformat mcopy ipsw; do\n  command -v \"$t\" >/dev/null || { echo\
+        \ \"missing tool: $t\"; ok=0; }\ndone\nfor t in lld-link llvm-lib llvm-rc\
+        \ llvm-nm llvm-objcopy; do\n  [ -f \"/opt/homebrew/opt/llvm/bin/$t\" ] ||\
+        \ [ -f \"/opt/homebrew/opt/lld/bin/$t\" ] || { echo \"missing tool: $t\";\
+        \ ok=0; }\ndone\n[ \"$ok\" = 1 ]\n"
+    - name: platform seed
+      env:
+        seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+      run: "if ! [[ \"$seed\" =~ ^[0-9a-fA-F]{8}$ ]]; then\n  echo 'Set the repository\
+        \ secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.'\
+        \ >&2\n  exit 1\nfi\n"
+    - name: seed cache identity
+      id: seed-key
+      env:
+        SEED: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+      run: "python3 - <<'PY'\nimport hashlib, os\nwith open(os.environ['GITHUB_OUTPUT'],\
+        \ 'a') as out:\n    out.write('key=data-seed-v1-' + hashlib.sha256(os.environ['SEED'].encode()).hexdigest()[:16]\
+        \ + '\\n')\nPY\n"
+    - uses: actions/cache/restore@v4
+      id: data-cache
+      if: inputs.os == '27'
+      with:
+        path: 'UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
 
-                  # The archive endpoint answers 302 to a pre-signed blob URL that
-                  # rejects a bearer token; urllib would carry the header across the
-                  # redirect and the download dies with HTTP 401. Follow it by hand.
-                  class NoRedirect(urllib.request.HTTPRedirectHandler):
-                      def redirect_request(self, req, fp, code, msg, headers, newurl):
-                          return None
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
 
-                  payload = None
-                  try:
-                      with urllib.request.build_opener(NoRedirect).open(
-                              urllib.request.Request(newest['archive_download_url'], headers={
-                                  'Authorization': 'Bearer ' + token,
-                                  'Accept': 'application/vnd.github+json',
-                                  'User-Agent': 'unixnu-seed-restore'}), timeout=60) as reply:
-                          payload = reply.read()
-                  except urllib.error.HTTPError as error:
-                      if error.code in (301, 302, 303, 307, 308) and error.headers.get('Location'):
-                          with urllib.request.urlopen(error.headers['Location'], timeout=300) as blob:
-                              payload = blob.read()
-                      else:
-                          print('seed: artifact download failed:', error.code)
-                  if payload:
-                      archive = zipfile.ZipFile(io.BytesIO(payload))
-                      names = archive.namelist()
-                      members = [n for n in names if n.endswith('data.dbr')]
-                      stamps = [n for n in names if n.endswith('inputs.json')]
-                      if members:
-                          work.mkdir(parents=True, exist_ok=True)
-                          seed.write_bytes(archive.read(members[0]))
-                          if stamps and not stamp.is_file():
-                              stamp.write_bytes(archive.read(stamps[0]))
-                          print('seed: restored from artifact', newest['name'])
+          '
+        key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+    - name: prepare preserved Data seed
+      if: inputs.os == '27'
+      env:
+        INIT_DATA: ${{ inputs.init_data }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: "python3 - <<'PY'\nimport hashlib, io, json, os, pathlib, shutil, urllib.error,\
+        \ urllib.request, zipfile\nprofile = 'ipados-27.0.1-24A446'\nwork = pathlib.Path('UniXNU/out/sheng')\
+        \ / profile / 'sheng_ipados27' / 'runtime'\nseed = work / 'data.dbr'\nstamp\
+        \ = work / 'inputs.json'\ninputs = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text()).get('inputs')\
+        \ or {}\n\nif not seed.is_file():\n    committed = pathlib.Path('seed') /\
+        \ profile\n    if (committed / 'data.dbr').is_file():\n        work.mkdir(parents=True,\
+        \ exist_ok=True)\n        shutil.copyfile(committed / 'data.dbr', seed)\n\
+        \        if (committed / 'inputs.json').is_file() and not stamp.is_file():\n\
+        \            shutil.copyfile(committed / 'inputs.json', stamp)\n        print('seed:\
+        \ copied from seed/' + profile)\n\nif not seed.is_file():\n    token = os.environ.get('GITHUB_TOKEN',\
+        \ '')\n    try:\n        req = urllib.request.Request(\n            'https://api.github.com/repos/chrndianjidakai-collab/UniXNU-sheng/actions/artifacts?per_page=100',\n\
+        \            headers={'Authorization': 'Bearer ' + token,\n              \
+        \       'Accept': 'application/vnd.github+json',\n                     'User-Agent':\
+        \ 'unixnu-seed-restore'})\n        with urllib.request.urlopen(req, timeout=60)\
+        \ as reply:\n            listing = json.loads(reply.read())\n        candidates\
+        \ = [a for a in listing.get('artifacts', [])\n                      if a['name'].startswith('installation-seed-27')\
+        \ and not a.get('expired')]\n    except (urllib.error.URLError, ValueError)\
+        \ as error:\n        candidates = []\n        print('seed: artifact listing\
+        \ failed:', error)\n    if candidates:\n        newest = max(candidates, key=lambda\
+        \ a: a['created_at'])\n\n        # The archive endpoint answers 302 to a pre-signed\
+        \ blob URL that\n        # rejects a bearer token; urllib would carry the\
+        \ header across the\n        # redirect and the download dies with HTTP 401.\
+        \ Follow it by hand.\n        class NoRedirect(urllib.request.HTTPRedirectHandler):\n\
+        \            def redirect_request(self, req, fp, code, msg, headers, newurl):\n\
+        \                return None\n\n        payload = None\n        try:\n   \
+        \         with urllib.request.build_opener(NoRedirect).open(\n           \
+        \         urllib.request.Request(newest['archive_download_url'], headers={\n\
+        \                        'Authorization': 'Bearer ' + token,\n           \
+        \             'Accept': 'application/vnd.github+json',\n                 \
+        \       'User-Agent': 'unixnu-seed-restore'}), timeout=60) as reply:\n   \
+        \             payload = reply.read()\n        except urllib.error.HTTPError\
+        \ as error:\n            if error.code in (301, 302, 303, 307, 308) and error.headers.get('Location'):\n\
+        \                with urllib.request.urlopen(error.headers['Location'], timeout=300)\
+        \ as blob:\n                    payload = blob.read()\n            else:\n\
+        \                print('seed: artifact download failed:', error.code)\n  \
+        \      if payload:\n            archive = zipfile.ZipFile(io.BytesIO(payload))\n\
+        \            names = archive.namelist()\n            members = [n for n in\
+        \ names if n.endswith('data.dbr')]\n            stamps = [n for n in names\
+        \ if n.endswith('inputs.json')]\n            if members:\n               \
+        \ work.mkdir(parents=True, exist_ok=True)\n                seed.write_bytes(archive.read(members[0]))\n\
+        \                if stamps and not stamp.is_file():\n                    stamp.write_bytes(archive.read(stamps[0]))\n\
+        \                print('seed: restored from artifact', newest['name'])\n\n\
+        url = inputs.get('data_seed_url', '')\ndigest = inputs.get('data_seed_sha256',\
+        \ '').lower()\nif url and not seed.is_file():\n    print('::add-mask::' +\
+        \ url)\n    if not url.startswith('https://') or len(digest) != 64 or any(c\
+        \ not in '0123456789abcdef' for c in digest):\n        raise SystemExit('A\
+        \ seed URL requires HTTPS and its SHA-256')\n    with urllib.request.urlopen(url,\
+        \ timeout=120) as source:\n        data = source.read(64 * 1024 * 1024 + 1)\n\
+        \    if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() !=\
+        \ digest:\n        raise SystemExit('Seed size or SHA-256 mismatch')\n   \
+        \ work.mkdir(parents=True, exist_ok=True)\n    seed.write_bytes(data)\n  \
+        \  print('seed: downloaded from the dispatch input')\n\nif seed.is_file():\n\
+        \    print('seed ready:', seed.stat().st_size, 'bytes',\n          hashlib.sha256(seed.read_bytes()).hexdigest()[:16])\n\
+        elif os.environ.get('INIT_DATA') != 'true':\n    raise SystemExit('No saved\
+        \ seed. Supply the ORIGINAL seed for an existing installation, '\n       \
+        \              'or select init_data for a FIRST installation')\nPY\n"
+    - name: repair the pinned Mesa series
+      working-directory: device
+      run: 'python3 scripts/repair-mesa-series.py ../UniXNU
 
-          url = inputs.get('data_seed_url', '')
-          digest = inputs.get('data_seed_sha256', '').lower()
-          if url and not seed.is_file():
-              print('::add-mask::' + url)
-              if not url.startswith('https://') or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
-                  raise SystemExit('A seed URL requires HTTPS and its SHA-256')
-              with urllib.request.urlopen(url, timeout=120) as source:
-                  data = source.read(64 * 1024 * 1024 + 1)
-              if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != digest:
-                  raise SystemExit('Seed size or SHA-256 mismatch')
-              work.mkdir(parents=True, exist_ok=True)
-              seed.write_bytes(data)
-              print('seed: downloaded from the dispatch input')
+        '
+    - name: fetch the Wi-Fi supplicant sources
+      working-directory: device/drivers/Ath12kWifi
+      timeout-minutes: 45
+      run: 'set -x
 
-          if seed.is_file():
-              print('seed ready:', seed.stat().st_size, 'bytes',
-                    hashlib.sha256(seed.read_bytes()).hexdigest()[:16])
-          elif os.environ.get('INIT_DATA') != 'true':
-              raise SystemExit('No saved seed. Supply the ORIGINAL seed for an existing installation, '
-                               'or select init_data for a FIRST installation')
-          PY
+        python3 --version
 
-      - name: repair the pinned Mesa series
-        # turnip-frame-diagnostics.patch creates a header without the
-        # "new file mode"/"index" lines git needs, so git apply aborts with
-        # "error: dev/null: No such file or directory". Repair the header only;
-        # the hunk body is untouched, so the tree still reconstructs the pin.
-        working-directory: device
-        run: |
-          python3 scripts/repair-mesa-series.py ../UniXNU
-      - name: fetch the Wi-Fi supplicant sources
-        # drivers/Ath12kWifi/tools/prepare-supplicant.py starts with
-        #   fetch-sources.py --check
-        # and --check only verifies that deps/ already holds the locked trees; it
-        # downloads nothing. A fresh checkout has an empty deps/, so the payload
-        # step died at drivers/Ath12kWifi/tools/prepare-supplicant.py with exit 1
-        # after 26 minutes of kernel work. Fetch them once, up front.
+        ls -l tools/fetch-sources.py tools/source-lock.json
+
+        # Two independent defects make a fresh fetch impossible:
+
         #
-        # The locked sources are linux v7.0.14 (sparse), the wpa_supplicant 2.12
-        # release tarball and freebsd releng/15.1 (sparse).
-        working-directory: device/drivers/Ath12kWifi
-        timeout-minutes: 45
-        run: |
-          set -x
-          python3 --version
-          ls -l tools/fetch-sources.py tools/source-lock.json
-          # Two independent defects make a fresh fetch impossible:
-          #
-          #  1. every sparse path in tools/source-lock.json carries a leading
-          #     slash ("/include/"), and git answers
-          #       fatal: specify directories rather than patterns (no leading slash)
-          #  2. a few entries name single files, and `sparse-checkout add` accepts
-          #     directories only:
-          #       fatal: 'net/core/skbuff.c' is not a directory
-          #
-          # The first helper strips the slashes and moves file entries into a new
-          # `files` list; the second teaches fetch-sources.py to stage those with
-          # `git checkout <commit> -- <file>`. Commit pins and the supplicant
-          # sha256 are untouched.
-          python3 ../../scripts/fix-ath12k-sparse-paths.py .
-          python3 ../../scripts/patch-fetch-sources.py .
-          python3 tools/fetch-sources.py
-          echo '--- verify the check that failed before now passes ---'
-          python3 tools/fetch-sources.py --check
-          du -sh deps/* 2>/dev/null || true
-      - name: advance the sm8550 kit pin
-        # package/BluetoothProbe.cpp includes "Sm8550GeniUart.h" and calls
-        # sm8550_geni_uart14_vote()/sm8550_geni_uart14_source().
-        # build-gop-legacy-display-27.py compiles it with
-        #   -I <tree>/kits/Sm8550Platform
-        # but components.toml pins Sm8550Platform to a9f45dc6, whose
-        # kits/Sm8550Platform/ has only the GPU files (ShengGmu*, ShengGpuSmmu*).
-        # The GENI UART sources land one commit later, 009512d6, as pure additions
-        # (+218 lines, nothing removed). Without this the build dies with
-        #   fatal error: 'Sm8550GeniUart.h' file not found
-        working-directory: device
-        run: |
-          # The pin is recorded in three places; the helper rewrites whichever
-          # of them this checkout actually carries:
-          #   UniXNU/components.toml  [[component]] id = "Sm8550Platform"  revision
-          #   UniXNU/unixnu.lock      [source."sm8550"]                    commit
-          #   device/feeds.toml       [[source]] name = "sm8550"           commit
-          #
-          # unixnu.lock does not exist in a fresh UniXNU checkout (it is written
-          # by "unixnu fetch"), so every check below must tolerate absence: an
-          # earlier revision of this step ended with a bare `grep` on a missing
-          # file and killed the whole job with exit 2 before the build started.
-          python3 scripts/advance-sm8550-kit.py ../UniXNU .
 
-          echo '--- components.toml ---'
-          grep -A8 'id = "Sm8550Platform"' ../UniXNU/components.toml | grep -E 'revision|path' || true
+        #  1. every sparse path in tools/source-lock.json carries a leading
 
-          echo '--- feeds.toml ---'
-          grep -A3 'name = "sm8550"' feeds.toml || true
+        #     slash ("/include/"), and git answers
 
-          echo '--- both must now carry the same pin ---'
-          # Do not hard-code the revision here: advance-sm8550-kit.py owns it, and
-          # a literal in this workflow already drifted out of sync once (the check
-          # looked for 009512d6 after the helper had moved to f04fd8b1 and failed
-          # the job even though the helper had done its work). Compare the two
-          # files against each other instead.
-          python3 - <<'PY'
-          import re, sys, pathlib
-          comp = pathlib.Path('../UniXNU/components.toml').read_text(encoding='utf-8')
-          feeds = pathlib.Path('feeds.toml').read_text(encoding='utf-8')
-          m = re.search(r'id = "Sm8550Platform".*?revision = "([0-9a-f]{40})"', comp, re.S)
-          f = re.search(r'name = "sm8550".*?commit = "([0-9a-f]{40})"', feeds, re.S)
-          if not m or not f:
-              sys.exit('could not read the Sm8550Platform revision or the feeds commit')
-          if m.group(1) != f.group(1):
-              sys.exit(f'pin mismatch: components.toml {m.group(1)[:8]} vs feeds.toml {f.group(1)[:8]}')
-          if m.group(1) == 'a9f45dc60c035084b95463781538380f4c3606c9':
-              sys.exit('the helper did not advance the pin; the kit would miss Sm8550GeniUart.h')
-          print(f'OK   both files pin sm8550 to {m.group(1)[:8]}')
-          PY
-      - name: stage the proprietary firmware blobs
-        # proprietary-files.txt lists three paths with SHA-256 digests:
-        #   novatek/novatek_nt36532_n81a_fw_csot.bin   Touch
-        #   nanosic/MCU_Upgrade.bin                    Keyboard
-        #   qcom/sm8550/sheng/vpu30_4v.mbn             Video
-        # build-gop-legacy-display-27.py reads them from <device>/.cache/firmware
-        # near the end of its 35-minute run and aborts with
-        #   nanosic/MCU_Upgrade.bin: run scripts/extract-files.py --section Keyboard
-        # Stage them up front, verifying each digest.
-        working-directory: device
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/stage-proprietary.py .
-          echo '--- confirm all three digests ---'
-          python3 scripts/stage-proprietary.py . --check
-          ls -l .cache/firmware/nanosic .cache/firmware/novatek .cache/firmware/qcom/sm8550/sheng
-      - name: patch the fileset reference build
-        # build-fileset-release-reference.py hard-codes the archives it links
-        # (libpthread_kernel, libArmDTPlatform, libArmCpu) and never reads the
-        # defconfig. On 27 the kernel path needs libShengSourceStorage.a, which
-        # defines _sheng_boot_watchdog_policy and
-        # _native_verified_block_volume_device; without it the arm64e link fails.
-        working-directory: device
-        run: |
-          # Run the patch twice: the second run must report "already", which is
-          # the patch script's own idempotency check — no hand-written string
-          # matching that drifts when the script's wording changes.
-          python3 scripts/patch-fileset-reference.py ../UniXNU
-          python3 scripts/patch-fileset-reference.py ../UniXNU
-      - name: confirm the XnuPrelink revision
-        # UniXNU@9931232 already pins kits/XnuPrelink at 440589b0, the revision
-        # with `!`-prefixed exclusion roots in dependency_closure() and native
-        # __TEXT placed by its sections. This used to fetch that commit by hand
-        # because the older pin (82b847c4) carried b1888c12, which asks for the
-        # whole padded __TEXT inside __PRELINK_TEXT and fails with "No room".
-        # Keep the check so a future pin that regresses is caught here rather
-        # than 40 minutes into prelink.
-        run: |
-          cd UniXNU/kits/XnuPrelink
-          head=$(git rev-parse HEAD)
-          echo "XnuPrelink at $head"
-          if [ "$head" != "440589b0c31625f17edf363e24b3c82c51c70bb9" ]; then
-            echo "pinned revision differs from the one this board qualifies; fetching it"
-            git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
-            git checkout --detach FETCH_HEAD
-            git rev-parse HEAD
-          fi
-      - name: raise the metal bridge cargo timeout
-        # The GPU Metal bridge builds the Rust standard library from source
-        # (-Z build-std) on a cold cache, and 1800 s was not enough on a hosted
-        # macOS runner: the run died with subprocess.TimeoutExpired and reported
-        # only "returned non-zero exit status 1". The bound is a safety net, not
-        # a budget, so 5400 s costs time only when the build is truly stuck.
-        working-directory: device
-        run: |
-          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
-          python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
-      - name: report the prelink layout overrun
-        # The collision check in fileset_layout.Layout.__init__ carries no
-        # numbers, so the size of the overrun is unknown. Keep the failure but
-        # print every placed segment, the __DATA limit and the signed overrun.
-        working-directory: device
-        run: |
-          python3 scripts/patch-prelink-layout.py ../UniXNU
-          python3 scripts/patch-prelink-layout.py ../UniXNU
-      - name: patch the prelink dependency closure
-        # The pinned XnuPrelink submodule's dependency_closure() only strips the
-        # `!` exclusion prefix from --root arguments, not from dependencies
-        # reached through a kext's OSBundleLibraries. iPadOS 27's kernelcache
-        # contains such a `!com.apple.driver.AppleSMC` entry, so prelink dies
-        # with "Missing prelink dependency". Run twice for idempotency.
-        working-directory: device
-        run: |
-          python3 scripts/patch-prelink-closure.py ../UniXNU
-          python3 scripts/patch-prelink-closure.py ../UniXNU
-      - name: patch the weak defaults
-        # On UniXNU@9931232 build-sheng-source-storage.py's weak_defaults()
-        # already covers BootLog.c itself (it walks every
-        # `extern ... weak_import` declaration in the file it is given), so this
-        # patch is a no-op there and stays as a fallback for an older pin.
-        # The coverage this profile still needs comes from the next step.
-        working-directory: device
-        run: |
-          # Run the patch twice: the second run must report "already patched",
-          # which is the patch script's own idempotency check — no hand-written
-          # string matching that drifts when the script's wording changes.
-          python3 scripts/patch-weak-defaults.py ../UniXNU
-          python3 scripts/patch-weak-defaults.py ../UniXNU
-      - name: cover the weak imports of every 27 declaring source
-        # The 27 patch series adds `extern ... weak_import` declarations to
-        # kernel sources other than BootLog.c. Upstream's weak_defaults() only
-        # runs on BootLog.c, so on UniXNU@9931232 the arm64e link fails with
-        # seven undefined symbols. The declaring files live in
-        # .cache/xnu-work where device_source() cannot find them, so this patch
-        # appends explicit zeroed definitions to the storage archive instead.
-        # Run twice for the script's own idempotency check.
-        working-directory: device
-        run: |
-          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-      - name: print the ramdisk handoff decisions on the screen
-        # UniXNURamDiskDxe's three failure modes all return silently, and this
-        # board has neither serial output nor the Advanced Logger, so the menu
-        # only shows "no boot entry found". This patch puts a Print() beside
-        # every decision: HOB missing, x0 not a device tree, no initrd in
-        # /chosen, and the success line. The next boot names its blocker on
-        # the screen itself. Run twice for idempotency.
-        working-directory: device
-        run: |
-          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
-          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
-      - name: build cache identity
-        # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
-        # linux/freebsd sources) and the kernel compile repeat from zero every
-        # run — roughly 4 + 35 minutes. The key folds in everything that changes
-        # the objects: board.toml, the source pins, the component pins, the patch
-        # series, the driver scripts, both repository revisions and the profile.
-        # A changed patch therefore misses the cache instead of restoring stale
-        # objects, which is the failure mode that matters here.
-        id: build-cache
-        working-directory: device
-        run: |
-          key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os }}")
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          echo "build cache key: $key"
-      - name: restore the build cache
-        id: build-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          # Scoped: the raw `UniXNU/out` also holds the decrypted IPSW images
-          # (~15 GB under runtime/), which pushed this cache to 18 GB, over the
-          # 10 GB repository limit — GitHub then evicted the data-seed cache and
-          # lanes died with "No saved seed". The build tree (patched XNU sources
-          # + objects) is the expensive part worth keeping; runtime/ is derived
-          # and re-extracted each run.
-          path: |
-            device/deps
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
-            uefi-sheng
-          key: build-${{ steps.build-cache.outputs.key }}
-      - name: report the build cache
-        run: |
-          echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
-          du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
-      - name: restore the sheng firmware inputs
-        # archive (board.toml [firmware.image]), extracts only the porting
-        # inputs from it, deletes the archive and generates uefi-sheng/Binaries
-        # from the UEFI ELF inside it. Without those inputs the FDF has no DXE
-        # modules to embed and sheng.fdf still produces an image — a 3 MB one
-        # holding SEC and DxeCore only. That image boots, shows the UEFI boot
-        # manager, and reports "no boot": no FAT driver, no RamDisk, no
-        # DarwinBoot, so the payload volume is never mounted.
+        #       fatal: specify directories rather than patterns (no leading slash)
+
+        #  2. a few entries name single files, and `sparse-checkout add` accepts
+
+        #     directories only:
+
+        #       fatal: ''net/core/skbuff.c'' is not a directory
+
         #
-        # Caching the extraction result fixes the two things that made that
-        # happen: six lanes each pulled the same 7.6 GB (45 GB of runner
-        # traffic), and a download interrupted by the 30 s per-connection
-        # timeout left a partial cache that the next step reported as an empty
-        # Binaries instead of failing.
-        id: firmware-inputs
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            device/.cache/firmware/sheng
-            uefi-sheng/Binaries
-          key: sheng-fw-${{ hashFiles('device/board.toml') }}
-      - name: package
-        id: package
-        working-directory: device
-        env:
-          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
-          GITHUB_TOKEN: ${{ github.token }}
-          INIT_DATA: ${{ inputs.init_data }}
-          OS_PROFILE: ${{ inputs.os }}
-        run: |
-          args=(--os "$OS_PROFILE" --uefi ../uefi-sheng)
-          if [ "$OS_PROFILE" = 27 ] && [ "$INIT_DATA" = true ]; then
-            args+=(--init-data)
-          fi
-          scripts/package.sh "${args[@]}"
-      - name: save the sheng firmware inputs
-        # Save right after the preflight produced them, before anything later
-        # can fail: the extraction is the expensive part and it does not depend
-        # on the kernel or the OS profile.
-        if: always() && steps.firmware-inputs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            device/.cache/firmware/sheng
-            uefi-sheng/Binaries
-          key: sheng-fw-${{ hashFiles('device/board.toml') }}
-      - name: verify the firmware volume is complete
-        # The sheng firmware nests two containers, and a check that stops at the
-        # first one reports a false failure:
-        #
-        #   boot.img kernel field
-        #     gzip        -> 3.0 MiB  FV (SEC + one FV_IMAGE file, 47% used)
-        #        LZMA     -> 7.65 MiB  FVMAIN (the whole DXE phase)
-        #
-        # The outer 3 MiB is [uefi_fd] size and is fixed by MemoryMapLib.c, so
-        # its size says nothing about completeness. Unpack both layers and look
-        # for the drivers the payload path needs, which is what the guide's
-        # payload-discovery list asks for.
-        working-directory: UniXNU
-        run: |
-          python3 - <<'PY'
-          import glob, lzma, struct, sys, zlib
 
-          images = glob.glob('out/sheng/*/*/boot/boot.img')
-          if not images:
-              sys.exit('no boot.img was produced')
-          boot = open(images[0], 'rb').read()
-          if boot[:8] != b'ANDROID!':
-              sys.exit('boot.img does not start with ANDROID!')
-          kernel_size = struct.unpack_from('<I', boot, 8)[0]
-          page = struct.unpack_from('<I', boot, 36)[0] or 4096
-          blob = boot[page:page + kernel_size]
+        # The first helper strips the slashes and moves file entries into a new
 
-          # Layer 1: the gzip stream around BootShim + the firmware volume.
-          d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-          outer = d.decompress(blob) + d.flush()
-          if not d.eof:
-              sys.exit('the kernel field is not a complete gzip stream')
-          print(f'outer firmware volume: {len(outer)} bytes ({len(outer)/1048576:.2f} MB)')
+        # `files` list; the second teaches fetch-sources.py to stage those with
 
-          # Layer 2: FVMAIN_COMPACT is LZMA in an FV_IMAGE file. Find the stream
-          # by its properties byte; the 8-byte size that follows is the
-          # uncompressed length.
-          inner = None
-          for at in range(len(outer) - 8):
-              if outer[at] != 0x5D or outer[at + 1] or outer[at + 2]:
-                  continue
-              try:
-                  dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-                  got = dec.decompress(outer[at:at + 4 * 1024 * 1024])
-              except Exception:
-                  continue
-              if len(got) > 1024 * 1024:
-                  inner = got
-                  print(f'inner FVMAIN: {len(got)} bytes ({len(got)/1048576:.2f} MB) '
-                        f'at offset {at}')
-                  break
-          if inner is None:
-              sys.exit('the firmware volume carries no decompressible FVMAIN')
+        # `git checkout <commit> -- <file>`. Commit pins and the supplicant
 
-          # What the payload path needs; the guide lists exactly these.
-          needed = ('UniXNURamDiskDxe', 'DarwinBoot', 'DiskIo', 'EnhancedFat',
-                    'SimpleFileSystem', 'BlockIo')
-          missing = [w for w in needed if w.encode() not in inner]
-          for word in needed:
-              print(f'  {word:18s} {"present" if word.encode() in inner else "MISSING"}')
-          if missing:
-              sys.exit('firmware is missing ' + ', '.join(missing))
-          print('firmware carries the whole payload path')
-          PY
-      - name: build userdata-root.img
-        # `scripts/package.sh` (unixnu release) never runs `unixnu build
-        # userdata`, so the root file system image for the unixnu partition has
-        # to be built here, on the runner that already has the toolchain.
-        working-directory: UniXNU
-        env:
-          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
-          UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
-        run: |
-          ./unixnu build userdata --dry-run
-          ./unixnu build userdata
-      - name: report
-        if: always()
-        working-directory: UniXNU
-        run: |
-          echo "## lane ${{ matrix.lane }}" >> "$GITHUB_STEP_SUMMARY"
-          for f in out/sheng/*/*/userdata/userdata-root.json; do
-            [ -f "$f" ] || continue
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            head -c 8000 "$f" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          done
-          ls -l out/sheng/*/*/userdata/ out/sheng/*/*/boot/ 2>/dev/null || true
-      - uses: actions/cache/save@v4
-        if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
-        with:
-          path: |
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
-          key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
-      - name: save the build cache
-        # Save even when a later archive step fails. A failed run's objects are
-        # still valid input for the next run: the XNU patch step skips itself when
-        # its inputs signature matches (unixnu/patches.py), make only rebuilds
-        # what is missing, and the qualified archives carry sha256 checks at link
-        # time. Losing 40+ minutes of objects on every failed probe costs far
-        # more than the rare half-written object, which a linker error exposes.
-        # Always() also covers manual cancellations mid-compile.
-        if: always() && steps.build-cache.outputs.key != '' && steps.build-cache-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          # Scoped: the raw `UniXNU/out` also holds the decrypted IPSW images
-          # (~15 GB under runtime/), which pushed this cache to 18 GB, over the
-          # 10 GB repository limit — GitHub then evicted the data-seed cache and
-          # lanes died with "No saved seed". The build tree (patched XNU sources
-          # + objects) is the expensive part worth keeping; runtime/ is derived
-          # and re-extracted each run.
-          path: |
-            device/deps
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
-            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
-            uefi-sheng
-          key: build-${{ steps.build-cache.outputs.key }}
-      - name: installation seed backup
-        if: always() && inputs.os == '27' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: installation-seed-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 30
-          path: |
-            UniXNU/out/sheng/*/*/runtime/data.dbr
-            UniXNU/out/sheng/*/*/runtime/inputs.json
-      - name: images
-        uses: actions/upload-artifact@v4
-        with:
-          name: images-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 30
-          if-no-files-found: error
-          path: |
-            UniXNU/out/sheng/*/*/boot/boot.img
-            UniXNU/out/sheng/*/*/payload/payload.img
-            UniXNU/out/sheng/*/*/kernel/kernel.macho
-            UniXNU/out/sheng/*/*/package.manifest.json
-      - name: userdata image
-        uses: actions/upload-artifact@v4
-        with:
-          name: rootfs-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 30
-          if-no-files-found: warn
-          path: |
-            UniXNU/out/sheng/*/*/userdata/userdata-root.img
-            UniXNU/out/sheng/*/*/userdata/userdata-root.json
+        # sha256 are untouched.
+
+        python3 ../../scripts/fix-ath12k-sparse-paths.py .
+
+        python3 ../../scripts/patch-fetch-sources.py .
+
+        python3 tools/fetch-sources.py
+
+        echo ''--- verify the check that failed before now passes ---''
+
+        python3 tools/fetch-sources.py --check
+
+        du -sh deps/* 2>/dev/null || true
+
+        '
+    - name: advance the sm8550 kit pin
+      working-directory: device
+      run: "# The pin is recorded in three places; the helper rewrites whichever\n\
+        # of them this checkout actually carries:\n#   UniXNU/components.toml  [[component]]\
+        \ id = \"Sm8550Platform\"  revision\n#   UniXNU/unixnu.lock      [source.\"\
+        sm8550\"]                    commit\n#   device/feeds.toml       [[source]]\
+        \ name = \"sm8550\"           commit\n#\n# unixnu.lock does not exist in a\
+        \ fresh UniXNU checkout (it is written\n# by \"unixnu fetch\"), so every check\
+        \ below must tolerate absence: an\n# earlier revision of this step ended with\
+        \ a bare `grep` on a missing\n# file and killed the whole job with exit 2\
+        \ before the build started.\npython3 scripts/advance-sm8550-kit.py ../UniXNU\
+        \ .\n\necho '--- components.toml ---'\ngrep -A8 'id = \"Sm8550Platform\"'\
+        \ ../UniXNU/components.toml | grep -E 'revision|path' || true\n\necho '---\
+        \ feeds.toml ---'\ngrep -A3 'name = \"sm8550\"' feeds.toml || true\n\necho\
+        \ '--- both must now carry the same pin ---'\n# Do not hard-code the revision\
+        \ here: advance-sm8550-kit.py owns it, and\n# a literal in this workflow already\
+        \ drifted out of sync once (the check\n# looked for 009512d6 after the helper\
+        \ had moved to f04fd8b1 and failed\n# the job even though the helper had done\
+        \ its work). Compare the two\n# files against each other instead.\npython3\
+        \ - <<'PY'\nimport re, sys, pathlib\ncomp = pathlib.Path('../UniXNU/components.toml').read_text(encoding='utf-8')\n\
+        feeds = pathlib.Path('feeds.toml').read_text(encoding='utf-8')\nm = re.search(r'id\
+        \ = \"Sm8550Platform\".*?revision = \"([0-9a-f]{40})\"', comp, re.S)\nf =\
+        \ re.search(r'name = \"sm8550\".*?commit = \"([0-9a-f]{40})\"', feeds, re.S)\n\
+        if not m or not f:\n    sys.exit('could not read the Sm8550Platform revision\
+        \ or the feeds commit')\nif m.group(1) != f.group(1):\n    sys.exit(f'pin\
+        \ mismatch: components.toml {m.group(1)[:8]} vs feeds.toml {f.group(1)[:8]}')\n\
+        if m.group(1) == 'a9f45dc60c035084b95463781538380f4c3606c9':\n    sys.exit('the\
+        \ helper did not advance the pin; the kit would miss Sm8550GeniUart.h')\n\
+        print(f'OK   both files pin sm8550 to {m.group(1)[:8]}')\nPY\n"
+    - name: stage the proprietary firmware blobs
+      working-directory: device
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: 'python3 scripts/stage-proprietary.py .
+
+        echo ''--- confirm all three digests ---''
+
+        python3 scripts/stage-proprietary.py . --check
+
+        ls -l .cache/firmware/nanosic .cache/firmware/novatek .cache/firmware/qcom/sm8550/sheng
+
+        '
+    - name: patch the fileset reference build
+      working-directory: device
+      run: '# Run the patch twice: the second run must report "already", which is
+
+        # the patch script''s own idempotency check — no hand-written string
+
+        # matching that drifts when the script''s wording changes.
+
+        python3 scripts/patch-fileset-reference.py ../UniXNU
+
+        python3 scripts/patch-fileset-reference.py ../UniXNU
+
+        '
+    - name: confirm the XnuPrelink revision
+      run: "cd UniXNU/kits/XnuPrelink\nhead=$(git rev-parse HEAD)\necho \"XnuPrelink\
+        \ at $head\"\nif [ \"$head\" != \"440589b0c31625f17edf363e24b3c82c51c70bb9\"\
+        \ ]; then\n  echo \"pinned revision differs from the one this board qualifies;\
+        \ fetching it\"\n  git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9\n\
+        \  git checkout --detach FETCH_HEAD\n  git rev-parse HEAD\nfi\n"
+    - name: raise the metal bridge cargo timeout
+      working-directory: device
+      run: 'python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+
+        python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+
+        '
+    - name: report the prelink layout overrun
+      working-directory: device
+      run: 'python3 scripts/patch-prelink-layout.py ../UniXNU
+
+        python3 scripts/patch-prelink-layout.py ../UniXNU
+
+        '
+    - name: patch the prelink dependency closure
+      working-directory: device
+      run: 'python3 scripts/patch-prelink-closure.py ../UniXNU
+
+        python3 scripts/patch-prelink-closure.py ../UniXNU
+
+        '
+    - name: patch the weak defaults
+      working-directory: device
+      run: '# Run the patch twice: the second run must report "already patched",
+
+        # which is the patch script''s own idempotency check — no hand-written
+
+        # string matching that drifts when the script''s wording changes.
+
+        python3 scripts/patch-weak-defaults.py ../UniXNU
+
+        python3 scripts/patch-weak-defaults.py ../UniXNU
+
+        '
+    - name: build cache identity
+      id: build-cache
+      working-directory: device
+      run: 'key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os
+        }}")
+
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+
+        echo "build cache key: $key"
+
+        '
+    - name: restore the build cache
+      id: build-cache-restore
+      uses: actions/cache/restore@v4
+      with:
+        path: 'device/deps
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
+
+          uefi-sheng
+
+          '
+        key: build-${{ steps.build-cache.outputs.key }}
+    - name: print the ramdisk handoff decisions on the screen
+      working-directory: device
+      run: 'python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
+
+        python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
+
+        '
+    - name: cover the weak imports of every 27 declaring source
+      working-directory: device
+      run: 'python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+
+        python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+
+        '
+    - name: report the build cache
+      run: 'echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
+
+        du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
+
+        '
+    - name: restore the sheng firmware inputs
+      id: firmware-inputs
+      uses: actions/cache/restore@v4
+      with:
+        path: 'device/.cache/firmware/sheng
+
+          uefi-sheng/Binaries
+
+          '
+        key: sheng-fw-${{ hashFiles('device/board.toml') }}
+    - name: package
+      id: package
+      working-directory: device
+      env:
+        UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        GITHUB_TOKEN: ${{ github.token }}
+        INIT_DATA: ${{ inputs.init_data }}
+        OS_PROFILE: ${{ inputs.os }}
+      run: "args=(--os \"$OS_PROFILE\" --uefi ../uefi-sheng)\nif [ \"$OS_PROFILE\"\
+        \ = 27 ] && [ \"$INIT_DATA\" = true ]; then\n  args+=(--init-data)\nfi\nscripts/package.sh\
+        \ \"${args[@]}\"\n"
+    - name: save the sheng firmware inputs
+      if: always() && steps.firmware-inputs.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: 'device/.cache/firmware/sheng
+
+          uefi-sheng/Binaries
+
+          '
+        key: sheng-fw-${{ hashFiles('device/board.toml') }}
+    - name: verify the firmware volume is complete
+      working-directory: UniXNU
+      run: "python3 - <<'PY'\nimport glob, lzma, struct, sys, zlib\n\nimages = glob.glob('out/sheng/*/*/boot/boot.img')\n\
+        if not images:\n    sys.exit('no boot.img was produced')\nboot = open(images[0],\
+        \ 'rb').read()\nif boot[:8] != b'ANDROID!':\n    sys.exit('boot.img does not\
+        \ start with ANDROID!')\nkernel_size = struct.unpack_from('<I', boot, 8)[0]\n\
+        page = struct.unpack_from('<I', boot, 36)[0] or 4096\nblob = boot[page:page\
+        \ + kernel_size]\n\n# Layer 1: the gzip stream around BootShim + the firmware\
+        \ volume.\nd = zlib.decompressobj(16 + zlib.MAX_WBITS)\nouter = d.decompress(blob)\
+        \ + d.flush()\nif not d.eof:\n    sys.exit('the kernel field is not a complete\
+        \ gzip stream')\nprint(f'outer firmware volume: {len(outer)} bytes ({len(outer)/1048576:.2f}\
+        \ MB)')\n\n# Layer 2: FVMAIN_COMPACT is LZMA in an FV_IMAGE file. Find the\
+        \ stream\n# by its properties byte; the 8-byte size that follows is the\n\
+        # uncompressed length.\ninner = None\nfor at in range(len(outer) - 8):\n \
+        \   if outer[at] != 0x5D or outer[at + 1] or outer[at + 2]:\n        continue\n\
+        \    try:\n        dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)\n\
+        \        got = dec.decompress(outer[at:at + 4 * 1024 * 1024])\n    except\
+        \ Exception:\n        continue\n    if len(got) > 1024 * 1024:\n        inner\
+        \ = got\n        print(f'inner FVMAIN: {len(got)} bytes ({len(got)/1048576:.2f}\
+        \ MB) '\n              f'at offset {at}')\n        break\nif inner is None:\n\
+        \    sys.exit('the firmware volume carries no decompressible FVMAIN')\n\n\
+        # What the payload path needs; the guide lists exactly these.\nneeded = ('UniXNURamDiskDxe',\
+        \ 'DarwinBoot', 'DiskIo', 'EnhancedFat',\n          'SimpleFileSystem', 'BlockIo')\n\
+        missing = [w for w in needed if w.encode() not in inner]\nfor word in needed:\n\
+        \    print(f'  {word:18s} {\"present\" if word.encode() in inner else \"MISSING\"\
+        }')\nif missing:\n    sys.exit('firmware is missing ' + ', '.join(missing))\n\
+        print('firmware carries the whole payload path')\nPY\n"
+    - name: build userdata-root.img
+      working-directory: UniXNU
+      env:
+        UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        UNIXNU_UEFI: ${{ github.workspace }}/uefi-sheng
+      run: './unixnu build userdata --dry-run
+
+        ./unixnu build userdata
+
+        '
+    - name: report
+      if: always()
+      working-directory: UniXNU
+      run: "echo \"## lane ${{ matrix.lane }}\" >> \"$GITHUB_STEP_SUMMARY\"\nfor f\
+        \ in out/sheng/*/*/userdata/userdata-root.json; do\n  [ -f \"$f\" ] || continue\n\
+        \  echo '```json' >> \"$GITHUB_STEP_SUMMARY\"\n  head -c 8000 \"$f\" >> \"\
+        $GITHUB_STEP_SUMMARY\"\n  echo '```' >> \"$GITHUB_STEP_SUMMARY\"\ndone\nls\
+        \ -l out/sheng/*/*/userdata/ out/sheng/*/*/boot/ 2>/dev/null || true\n"
+    - uses: actions/cache/save@v4
+      if: always() && inputs.os == '27' && steps.data-cache.outputs.cache-hit != 'true'
+        && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr')
+        != ''
+      with:
+        path: 'UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/inputs.json
+
+          '
+        key: ${{ steps.seed-key.outputs.key }}-${{ inputs.os }}
+    - name: save the build cache
+      if: always() && steps.build-cache.outputs.key != '' && steps.build-cache-restore.outputs.cache-hit
+        != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: 'device/deps
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
+
+          UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
+
+          uefi-sheng
+
+          '
+        key: build-${{ steps.build-cache.outputs.key }}
+    - name: installation seed backup
+      if: always() && inputs.os == '27' && hashFiles('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/runtime/data.dbr')
+        != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: installation-seed-${{ inputs.os }}-lane${{ matrix.lane }}
+        retention-days: 30
+        path: 'UniXNU/out/sheng/*/*/runtime/data.dbr
+
+          UniXNU/out/sheng/*/*/runtime/inputs.json
+
+          '
+    - name: images
+      uses: actions/upload-artifact@v4
+      with:
+        name: images-${{ inputs.os }}-lane${{ matrix.lane }}
+        retention-days: 30
+        if-no-files-found: error
+        path: 'UniXNU/out/sheng/*/*/boot/boot.img
+
+          UniXNU/out/sheng/*/*/payload/payload.img
+
+          UniXNU/out/sheng/*/*/kernel/kernel.macho
+
+          UniXNU/out/sheng/*/*/package.manifest.json
+
+          '
+    - name: userdata image
+      uses: actions/upload-artifact@v4
+      with:
+        name: rootfs-${{ inputs.os }}-lane${{ matrix.lane }}
+        retention-days: 30
+        if-no-files-found: warn
+        path: 'UniXNU/out/sheng/*/*/userdata/userdata-root.img
+
+          UniXNU/out/sheng/*/*/userdata/userdata-root.json
+
+          '

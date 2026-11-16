@@ -147,11 +147,69 @@ jobs:
           set -o pipefail
           args=(--os "${{ inputs.os }}" --uefi ../uefi-sheng)
           ../UniXNU/unixnu build firmware "${args[@]}" 2>&1 | tail -60
+      - name: restore the payload from a previous run
+        # bootimg needs the payload as its ramdisk, and this probe never builds
+        # it (that is the whole point: a firmware edit does not touch the
+        # payload). Fetch it from the newest run artifact that carries one
+        # instead of rebuilding the kernel to regenerate identical bytes.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import io, json, os, pathlib, urllib.error, urllib.request, zipfile
+
+          work = pathlib.Path('UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27')
+          target = work / 'payload/payload.img'
+          if target.is_file():
+              print('payload already present:', target.stat().st_size, 'bytes')
+              raise SystemExit(0)
+
+          token = os.environ['GITHUB_TOKEN']
+          api = 'https://api.github.com/repos/chrndianjidakai-collab/UniXNU-sheng/actions/artifacts?per_page=100'
+          req = urllib.request.Request(api, headers={
+              'Authorization': 'Bearer ' + token,
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'unixnu-firmware-probe'})
+          with urllib.request.urlopen(req, timeout=60) as reply:
+              listing = json.loads(reply.read())
+          candidates = [a for a in listing.get('artifacts', [])
+                        if a['name'].startswith('images-') and not a.get('expired')]
+          if not candidates:
+              raise SystemExit('no images artifact to take the payload from')
+          newest = max(candidates, key=lambda a: a['created_at'])
+          print('payload source:', newest['name'], newest['created_at'])
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          payload = None
+          try:
+              with urllib.request.build_opener(NoRedirect).open(
+                      urllib.request.Request(newest['archive_download_url'], headers={
+                          'Authorization': 'Bearer ' + token,
+                          'Accept': 'application/vnd.github+json',
+                          'User-Agent': 'unixnu-firmware-probe'}), timeout=60) as reply:
+                  payload = reply.read()
+          except urllib.error.HTTPError as error:
+              if error.code in (301, 302, 303, 307, 308) and error.headers.get('Location'):
+                  with urllib.request.urlopen(error.headers['Location'], timeout=300) as blob:
+                      payload = blob.read()
+              else:
+                  raise SystemExit(f'artifact download failed: {error.code}')
+          archive = zipfile.ZipFile(io.BytesIO(payload))
+          member = [n for n in archive.namelist() if n.endswith('payload.img')]
+          if not member:
+              raise SystemExit('the artifact carries no payload.img')
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_bytes(archive.read(member[0]))
+          print('payload:', target.stat().st_size, 'bytes')
+          PY
       - name: report the firmware volume
         if: always()
         run: |
           python3 - <<'PY'
-          import glob, os, struct, sys
+          import glob, os, sys
           paths = glob.glob('uefi-sheng/Build/shengPkg/*/FV/*.fd')
           if not paths:
               print('no .fd produced')
@@ -159,15 +217,30 @@ jobs:
           for path in paths:
               data = open(path, 'rb').read()
               print(f'{os.path.basename(path)}: {len(data)} bytes ({len(data)/1048576:.2f} MB)')
-              probes = ('SimpleFileSystem', 'BlockIo', 'LoadImage', 'Fat', 'DiskIo',
-                        'Partition', 'RamDisk', 'DarwinBoot', 'UniXNU')
-              for word in probes:
+              for word in ('SimpleFileSystem', 'BlockIo', 'LoadImage', 'Fat',
+                           'DiskIo', 'Partition', 'RamDisk', 'DarwinBoot', 'UniXNU'):
                   hit = data.find(word.encode())
                   print(f'  {word:18s} {"present @" + hex(hit) if hit >= 0 else "MISSING"}')
           PY
-          du -sh uefi-sheng/Build 2>/dev/null || true
-          ls -la uefi-sheng/Build/shengPkg/*/FV/ 2>/dev/null || true
-      - name: upload the firmware and its log
+      - name: pack boot.img from the new firmware volume
+        # bootimg only needs three inputs: the firmware volume (which is what
+        # this probe rebuilt), the device tree and the payload ramdisk. Both of
+        # the latter are unchanged by a firmware edit, so there is no reason to
+        # re-run the kernel, prelink, payload or userdata steps to get a new
+        # boot.img — this packs one directly.
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          set -o pipefail
+          ../UniXNU/unixnu bootimg \
+            --os "${{ inputs.os }}" \
+            --uefi ../uefi-sheng \
+            --dtb ../UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree/build/sheng/sheng.dtb \
+            --ramdisk ../UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/payload/payload.img \
+            -o ../UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/boot/boot-probe.img 2>&1 | tail -30
+          ls -l ../UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/boot/ 2>/dev/null || true
+      - name: upload the firmware and the packed boot image
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -176,5 +249,7 @@ jobs:
           if-no-files-found: warn
           path: |
             uefi-sheng/Build/shengPkg/*/FV/*.fd
+            UniXNU/out/sheng/*/*/boot/boot-probe.img
+            UniXNU/out/sheng/*/*/boot/*.json
             UniXNU/out/sheng/*/*/logs/firmware.log
             UniXNU/out/sheng/*/*/logs/firmware-preflight.log

@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
-          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9
+          ref: 9931232fd68b8ae1db0abd957ecba417f1996e52
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -126,26 +126,27 @@ jobs:
             device/.cache/firmware/sheng
             uefi-sheng/Binaries
           key: sheng-fw-${{ hashFiles('device/board.toml') }}
-      - name: apply the firmware module edits
+      - name: report the firmware module layout
+        # No edit belongs here. sheng.dsc and sheng.fdf already carry the whole
+        # payload path, and the volume that comes out of them is complete: the
+        # 3.0 MiB flash device holds SEC plus one FV_IMAGE file whose LZMA
+        # stream unpacks to a 7.65 MiB FVMAIN with UniXNURamDiskDxe,
+        # DarwinBoot, DiskIoDxe, Fat, SimpleFileSystem and BlockIo inside.
+        #
+        # This step printed a "missing modules" verdict once, from searching the
+        # 3.0 MiB outer container for ASCII that only exists after the inner
+        # LZMA layer is unpacked. It stays as a report so the layout is visible
+        # without repeating that mistake.
         working-directory: device
         run: |
-          # Only the DSC changes. sheng.fdf's Include/DXE.inc already names the
-          # disk and file-system modules, but EDK II compiles what the DSC
-          # declares, so they had no code behind them.
-          #
-          # The flash device size stays 0x300000. MemoryMapLib.c places
-          #   FD Reserved       0xA7000000 0x100000
-          #   UEFI FD           0xA7100000 0x300000
-          #   UEFI FD Reserved  0xA7400000 0x200000
-          #   Info Blk / MMU PageTables right after
-          # and check-sheng.py refuses any [uefi_fd] size that does not match
-          # that table, so widening the FD would overwrite the structures that
-          # follow it. The FAT stack is a few hundred KB, which fits.
-          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          echo '--- sheng.dsc [Components] additions ---'
-          sed -n '/^\[Components\]/,/^\[LibraryClasses\]/p' ../uefi-sheng/Platforms/Xiaomi/shengPkg/sheng.dsc | grep -E 'DiskIo|Partition|Fat|EnglishDxe' || echo 'NOT PRESENT'
-          rm -rf ../uefi-sheng/Build
+          echo '--- sheng.dsc [Components] payload entries ---'
+          grep -E 'UniXNURamDiskDxe|DarwinBoot|DiskIoDxe|PartitionDxe|Fat\.inf|EnglishDxe' \
+            ../uefi-sheng/Platforms/Xiaomi/shengPkg/sheng.dsc || echo '(none listed)'
+          echo '--- sheng.fdf Include/DXE.inc payload entries ---'
+          grep -E 'UniXNURamDiskDxe|DarwinBoot|DiskIoDxe|PartitionDxe|Fat\.inf|EnglishDxe' \
+            ../uefi-sheng/Platforms/Xiaomi/shengPkg/Include/DXE.inc || echo '(none listed)'
+          echo '--- [uefi_fd] ---'
+          sed -n '/\[uefi_fd\]/,/^\[/p' ../uefi-sheng/Resources/Configs/sheng.toml
       - name: select the configuration
         # `unixnu release` runs defconfig before any build step; the tree
         # assembly and the work directory both key off it, so this probe does

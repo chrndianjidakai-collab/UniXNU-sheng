@@ -1,5 +1,5 @@
 name: firmware-probe
-true:
+on:
   workflow_dispatch:
     inputs:
       os:

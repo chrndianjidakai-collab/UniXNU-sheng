@@ -444,6 +444,13 @@ jobs:
         run: |
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
+          # The build cache restores the whole uefi-sheng checkout, Build/
+          # included. EDK II treats that directory as its incremental state and
+          # would reuse the module set recorded before the [Components] lines
+          # above existed, so the four new modules are never compiled and the
+          # volume stays at the 3.0 MB skeleton. Drop the tree so the firmware
+          # step builds the module list this DSC names.
+          rm -rf ../uefi-sheng/Build
       - name: restore the sheng firmware inputs
         # archive (board.toml [firmware.image]), extracts only the porting
         # inputs from it, deletes the archive and generates uefi-sheng/Binaries
@@ -514,12 +521,12 @@ jobs:
           print(f'firmware volume: {len(volume)} bytes ({len(volume) / 1048576:.1f} MB)')
           if not d.eof:
               sys.exit('the kernel field is not a complete gzip stream')
-          # A complete sheng volume is tens of megabytes: it embeds the DXE
-          # drivers, the FAT stack and DarwinBoot. Below this bound the FDF
-          # produced its SEC/DxeCore skeleton because Binaries/sheng was empty.
-          if len(volume) < 15 * 1024 * 1024:
-              sys.exit(f'firmware volume is only {len(volume)} bytes: Binaries/sheng was empty, '
-                       'so no DXE driver was embedded and the payload volume cannot be mounted')
+          # A complete sheng volume carries the DXE phase, not just its core.
+          # The 3.0 MB skeleton is SEC + DxeCore + the UniXNU modules; the
+          # vendor DXE set alone is tens of megabytes.
+          if len(volume) < 4 * 1024 * 1024:
+              sys.exit(f'firmware volume is only {len(volume)} bytes: the DXE phase was not '
+                       'embedded, so the payload volume cannot be mounted')
           # The DXE services the payload path needs. A SEC/DxeCore skeleton has
           # none of them: it carries DxeCore and BaseLib and stops there.
           for driver in (b'SimpleFileSystem', b'LoadImage', b'FatPkg', b'BlockIo'):

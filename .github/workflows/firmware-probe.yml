@@ -138,6 +138,13 @@ jobs:
           echo '--- sheng.toml [uefi_fd] ---'
           sed -n '/\[uefi_fd\]/,/^\[/p' ../uefi-sheng/Resources/Configs/sheng.toml
           rm -rf ../uefi-sheng/Build
+      - name: select the configuration
+        # `unixnu release` runs defconfig before any build step; the tree
+        # assembly and the work directory both key off it, so this probe does
+        # the same instead of relying on a remembered state the runner lacks.
+        working-directory: device
+        run: |
+          ../UniXNU/unixnu defconfig sheng_ipados27_defconfig -D . --os "${{ inputs.os }}"
       - name: build the firmware volume
         id: firmware
         working-directory: device
@@ -145,7 +152,7 @@ jobs:
           UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
         run: |
           set -o pipefail
-          args=(--os "${{ inputs.os }}" --uefi ../uefi-sheng)
+          args=(-D . --os "${{ inputs.os }}" --uefi ../uefi-sheng)
           ../UniXNU/unixnu build firmware "${args[@]}" 2>&1 | tail -60
       - name: restore the payload from a previous run
         # bootimg needs the payload as its ramdisk, and this probe never builds
@@ -234,6 +241,7 @@ jobs:
         run: |
           set -o pipefail
           ../UniXNU/unixnu bootimg \
+            -D . \
             --os "${{ inputs.os }}" \
             --uefi ../uefi-sheng \
             --dtb ../UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree/build/sheng/sheng.dtb \

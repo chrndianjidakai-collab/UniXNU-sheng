@@ -381,11 +381,11 @@ jobs:
           python3 scripts/patch-prelink-closure.py ../UniXNU
           python3 scripts/patch-prelink-closure.py ../UniXNU
       - name: patch the weak defaults
-        # build-sheng-source-storage.py's weak_defaults() only covers BootLog.c
-        # and only single-line declarations. BootLog.c's native_data_io_* block is
-        # one declaration folded across six lines, and LegacyDisplayProbe.cpp /
-        # BluetoothProbe.cpp declare their own weak_import symbols; nothing provides
-        # them on iPadOS 27, so the arm64e kernel link dies on undefined symbols.
+        # On UniXNU@9931232 build-sheng-source-storage.py's weak_defaults()
+        # already covers BootLog.c itself (it walks every
+        # `extern ... weak_import` declaration in the file it is given), so this
+        # patch is a no-op there and stays as a fallback for an older pin.
+        # The coverage this profile still needs comes from the next step.
         working-directory: device
         run: |
           # Run the patch twice: the second run must report "already patched",
@@ -393,6 +393,23 @@ jobs:
           # string matching that drifts when the script's wording changes.
           python3 scripts/patch-weak-defaults.py ../UniXNU
           python3 scripts/patch-weak-defaults.py ../UniXNU
+      - name: cover the weak imports of every 27 declaring source
+        # The 27 patch series adds `extern ... weak_import` declarations to
+        # kernel sources other than BootLog.c (kern_exec.c, bsd_init.c,
+        # IOKitBSDInit.cpp, locks.c). Upstream's weak_defaults() only runs on
+        # BootLog.c, so those declarations reach the arm64e link with no
+        # definition and the kernel fails with nine undefined symbols:
+        #   _native_ram_block_gpu_addon / _volume_seed, _native_source_storage_start,
+        #   _native_verified_block_manifest_sha384 / _root_authorized /
+        #   _volume_device, _sheng_boot_watchdog_policy,
+        #   _iokit_physical_descriptor_close_notify, _ml_static_mfree_prepare.
+        # This patch extends the same call to the declaring sources and adds the
+        # generated files to the archive's source list.
+        # Run twice for the script's own idempotency check.
+        working-directory: device
+        run: |
+          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
       - name: build cache identity
         # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
         # linux/freebsd sources) and the kernel compile repeat from zero every

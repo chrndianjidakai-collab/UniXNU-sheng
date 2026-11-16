@@ -425,6 +425,40 @@ jobs:
         run: |
           echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
           du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
+      - name: add the payload file-system and loader modules to the firmware
+        # sheng.fdf's FvMain embeds six of the nine modules sheng.dsc compiles,
+        # and it never embeds the UEFI file-system stack at all. The image still
+        # builds and still starts: SEC brings up DxeCore, the boot manager
+        # appears, and every entry answers "no boot" because no block or
+        # file-system protocol ever reaches the payload volume. The device
+        # record states the FDF is supposed to carry these modules, so this
+        # restores the documented image. Run twice for the script's own
+        # idempotency check.
+        working-directory: device
+        run: |
+          python3 scripts/patch-sheng-fdf.py ../uefi-sheng
+          python3 scripts/patch-sheng-fdf.py ../uefi-sheng
+      - name: restore the sheng firmware inputs
+        # archive (board.toml [firmware.image]), extracts only the porting
+        # inputs from it, deletes the archive and generates uefi-sheng/Binaries
+        # from the UEFI ELF inside it. Without those inputs the FDF has no DXE
+        # modules to embed and sheng.fdf still produces an image — a 3 MB one
+        # holding SEC and DxeCore only. That image boots, shows the UEFI boot
+        # manager, and reports "no boot": no FAT driver, no RamDisk, no
+        # DarwinBoot, so the payload volume is never mounted.
+        #
+        # Caching the extraction result fixes the two things that made that
+        # happen: six lanes each pulled the same 7.6 GB (45 GB of runner
+        # traffic), and a download interrupted by the 30 s per-connection
+        # timeout left a partial cache that the next step reported as an empty
+        # Binaries instead of failing.
+        id: firmware-inputs
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            device/.cache/firmware/sheng
+            uefi-sheng/Binaries
+          key: sheng-fw-${{ hashFiles('device/board.toml') }}
       - name: package
         id: package
         working-directory: device
@@ -439,6 +473,54 @@ jobs:
             args+=(--init-data)
           fi
           scripts/package.sh "${args[@]}"
+      - name: save the sheng firmware inputs
+        # Save right after the preflight produced them, before anything later
+        # can fail: the extraction is the expensive part and it does not depend
+        # on the kernel or the OS profile.
+        if: always() && steps.firmware-inputs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            device/.cache/firmware/sheng
+            uefi-sheng/Binaries
+          key: sheng-fw-${{ hashFiles('device/board.toml') }}
+      - name: verify the firmware volume is complete
+        # A boot.img whose UEFI volume carries only SEC and DxeCore boots to the
+        # boot manager and answers "no boot". Check the properties that matter
+        # instead of the file size alone, so a future regression names itself
+        # here rather than on the device.
+        working-directory: UniXNU
+        run: |
+          python3 - <<'PY'
+          import glob, struct, sys, zlib
+
+          images = glob.glob('out/sheng/*/*/boot/boot.img')
+          if not images:
+              sys.exit('no boot.img was produced')
+          boot = open(images[0], 'rb').read()
+          if boot[:8] != b'ANDROID!':
+              sys.exit('boot.img does not start with ANDROID!')
+          kernel_size = struct.unpack_from('<I', boot, 8)[0]
+          page = struct.unpack_from('<I', boot, 36)[0] or 4096
+          blob = boot[page:page + kernel_size]
+          d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+          volume = d.decompress(blob) + d.flush()
+          print(f'firmware volume: {len(volume)} bytes ({len(volume) / 1048576:.1f} MB)')
+          if not d.eof:
+              sys.exit('the kernel field is not a complete gzip stream')
+          # A complete sheng volume is tens of megabytes: it embeds the DXE
+          # drivers, the FAT stack and DarwinBoot. Below this bound the FDF
+          # produced its SEC/DxeCore skeleton because Binaries/sheng was empty.
+          if len(volume) < 15 * 1024 * 1024:
+              sys.exit(f'firmware volume is only {len(volume)} bytes: Binaries/sheng was empty, '
+                       'so no DXE driver was embedded and the payload volume cannot be mounted')
+          # The DXE services the payload path needs. A SEC/DxeCore skeleton has
+          # none of them: it carries DxeCore and BaseLib and stops there.
+          for driver in (b'SimpleFileSystem', b'LoadImage', b'FatPkg', b'BlockIo'):
+              if driver not in volume:
+                  sys.exit(f'firmware volume has no {driver.decode()} protocol or package')
+              print(f'  {driver.decode():18s} present')
+          PY
       - name: build userdata-root.img
         # `scripts/package.sh` (unixnu release) never runs `unixnu build
         # userdata`, so the root file system image for the unixnu partition has

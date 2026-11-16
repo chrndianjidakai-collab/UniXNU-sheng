@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
-          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9 # Wi-Fi runtime and Data firmware integration
+          ref: 9931232fd68b8ae1db0abd957ecba417f1996e52 # Wi-Fi runtime and Data firmware integration
           path: UniXNU
           submodules: recursive
       - uses: actions/checkout@v4
@@ -334,20 +334,24 @@ jobs:
           # matching that drifts when the script's wording changes.
           python3 scripts/patch-fileset-reference.py ../UniXNU
           python3 scripts/patch-fileset-reference.py ../UniXNU
-      - name: advance the XnuPrelink submodule
-        # UniXNU@82b847c pins XnuPrelink@b1888c12 (2026-11-01), which predates
-        # two fixes the iPadOS 27 profile needs: `!`-prefixed exclusion roots in
-        # dependency_closure() and placing native __TEXT by its sections (the old
-        # revision asks for the whole padded 0x224000-byte __TEXT inside
-        # __PRELINK_TEXT and fails with "No room"). 440589b0 (2026-11-11) has
-        # both, keeps the same emit_prelink.py CLI and only adds one file.
-        # Fetch that exact commit into the checked-out submodule and pin the
-        # working tree to it; the patch below remains as a harmless fallback.
+      - name: confirm the XnuPrelink revision
+        # UniXNU@9931232 already pins kits/XnuPrelink at 440589b0, the revision
+        # with `!`-prefixed exclusion roots in dependency_closure() and native
+        # __TEXT placed by its sections. This used to fetch that commit by hand
+        # because the older pin (82b847c4) carried b1888c12, which asks for the
+        # whole padded __TEXT inside __PRELINK_TEXT and fails with "No room".
+        # Keep the check so a future pin that regresses is caught here rather
+        # than 40 minutes into prelink.
         run: |
           cd UniXNU/kits/XnuPrelink
-          git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
-          git checkout --detach FETCH_HEAD
-          git rev-parse HEAD
+          head=$(git rev-parse HEAD)
+          echo "XnuPrelink at $head"
+          if [ "$head" != "440589b0c31625f17edf363e24b3c82c51c70bb9" ]; then
+            echo "pinned revision differs from the one this board qualifies; fetching it"
+            git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
+            git checkout --detach FETCH_HEAD
+            git rev-parse HEAD
+          fi
       - name: raise the metal bridge cargo timeout
         # The GPU Metal bridge builds the Rust standard library from source
         # (-Z build-std) on a cold cache, and 1800 s was not enough on a hosted
@@ -425,47 +429,6 @@ jobs:
         run: |
           echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
           du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
-      - name: compile the payload disk and file-system stack
-        # sheng.fdf's Include/DXE.inc already names the whole payload path —
-        # UniXNURamDiskDxe, DarwinBoot, DiskIoDxe, PartitionDxe, Fat and
-        # EnglishDxe — but sheng.dsc's [Components] listed only the UniXNU and
-        # shengPkg modules. EDK II compiles what the DSC declares and only then
-        # lets the FDF place it, so FvMain carried those INF lines with nothing
-        # behind them: the volume came out at 3.0 MB with SEC, DxeCore and the
-        # UniXNU modules and no block or file-system protocol at all. The boot
-        # manager then listed no usable entry and every selection answered
-        # "no boot".
-        #
-        # The fix goes in the DSC, never in the FDF: the INF lines are already
-        # there, and a duplicate makes GenFv abort with
-        #   "the 23th file and 44th file have the same file GUID".
-        # Run twice for the script's own idempotency check.
-        working-directory: device
-        run: |
-          # Two things have to change together, both in the uefi-sheng checkout:
-          #
-          # 1. sheng.dsc's [Components] must list the disk and file-system
-          #    modules. sheng.fdf's Include/DXE.inc already places them in
-          #    FvMain, but EDK II only compiles what the DSC declares, so the
-          #    INF lines had nothing behind them.
-          # 2. the flash device must have room for them. sheng.toml carries
-          #    [uefi_fd] size = 0x300000 (3 MiB), which the SEC/DxeCore skeleton
-          #    fills exactly; firmware.build() then rejects any other size. The
-          #    vendor's own sheng UEFI is a 44.51 MB PE, so 3 MiB is a leftover
-          #    from the devices this template was copied from, not a sheng
-          #    limit.
-          #
-          # The fix never touches sheng.fdf: its INF lines are already there and
-          # a duplicate makes GenFv abort with
-          #   "the 23th file and 44th file have the same file GUID".
-          # Run each twice for its own idempotency check.
-          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          # The build cache restores the whole uefi-sheng checkout, Build/
-          # included. EDK II treats that directory as its incremental state and
-          # would reuse the module set recorded before these edits, so the new
-          # modules are never compiled. Drop the tree to force a full build.
-          rm -rf ../uefi-sheng/Build
       - name: restore the sheng firmware inputs
         # archive (board.toml [firmware.image]), extracts only the porting
         # inputs from it, deletes the archive and generates uefi-sheng/Binaries
@@ -513,14 +476,21 @@ jobs:
             uefi-sheng/Binaries
           key: sheng-fw-${{ hashFiles('device/board.toml') }}
       - name: verify the firmware volume is complete
-        # A boot.img whose UEFI volume carries only SEC and DxeCore boots to the
-        # boot manager and answers "no boot". Check the properties that matter
-        # instead of the file size alone, so a future regression names itself
-        # here rather than on the device.
+        # The sheng firmware nests two containers, and a check that stops at the
+        # first one reports a false failure:
+        #
+        #   boot.img kernel field
+        #     gzip        -> 3.0 MiB  FV (SEC + one FV_IMAGE file, 47% used)
+        #        LZMA     -> 7.65 MiB  FVMAIN (the whole DXE phase)
+        #
+        # The outer 3 MiB is [uefi_fd] size and is fixed by MemoryMapLib.c, so
+        # its size says nothing about completeness. Unpack both layers and look
+        # for the drivers the payload path needs, which is what the guide's
+        # payload-discovery list asks for.
         working-directory: UniXNU
         run: |
           python3 - <<'PY'
-          import glob, struct, sys, zlib
+          import glob, lzma, struct, sys, zlib
 
           images = glob.glob('out/sheng/*/*/boot/boot.img')
           if not images:
@@ -531,23 +501,43 @@ jobs:
           kernel_size = struct.unpack_from('<I', boot, 8)[0]
           page = struct.unpack_from('<I', boot, 36)[0] or 4096
           blob = boot[page:page + kernel_size]
+
+          # Layer 1: the gzip stream around BootShim + the firmware volume.
           d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-          volume = d.decompress(blob) + d.flush()
-          print(f'firmware volume: {len(volume)} bytes ({len(volume) / 1048576:.1f} MB)')
+          outer = d.decompress(blob) + d.flush()
           if not d.eof:
               sys.exit('the kernel field is not a complete gzip stream')
-          # A complete sheng volume carries the DXE phase, not just its core.
-          # The 3.0 MB skeleton is SEC + DxeCore + the UniXNU modules; the
-          # vendor DXE set alone is tens of megabytes.
-          if len(volume) < 4 * 1024 * 1024:
-              sys.exit(f'firmware volume is only {len(volume)} bytes: the DXE phase was not '
-                       'embedded, so the payload volume cannot be mounted')
-          # The DXE services the payload path needs. A SEC/DxeCore skeleton has
-          # none of them: it carries DxeCore and BaseLib and stops there.
-          for driver in (b'SimpleFileSystem', b'LoadImage', b'FatPkg', b'BlockIo'):
-              if driver not in volume:
-                  sys.exit(f'firmware volume has no {driver.decode()} protocol or package')
-              print(f'  {driver.decode():18s} present')
+          print(f'outer firmware volume: {len(outer)} bytes ({len(outer)/1048576:.2f} MB)')
+
+          # Layer 2: FVMAIN_COMPACT is LZMA in an FV_IMAGE file. Find the stream
+          # by its properties byte; the 8-byte size that follows is the
+          # uncompressed length.
+          inner = None
+          for at in range(len(outer) - 8):
+              if outer[at] != 0x5D or outer[at + 1] or outer[at + 2]:
+                  continue
+              try:
+                  dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+                  got = dec.decompress(outer[at:at + 4 * 1024 * 1024])
+              except Exception:
+                  continue
+              if len(got) > 1024 * 1024:
+                  inner = got
+                  print(f'inner FVMAIN: {len(got)} bytes ({len(got)/1048576:.2f} MB) '
+                        f'at offset {at}')
+                  break
+          if inner is None:
+              sys.exit('the firmware volume carries no decompressible FVMAIN')
+
+          # What the payload path needs; the guide lists exactly these.
+          needed = ('UniXNURamDiskDxe', 'DarwinBoot', 'DiskIo', 'EnhancedFat',
+                    'SimpleFileSystem', 'BlockIo')
+          missing = [w for w in needed if w.encode() not in inner]
+          for word in needed:
+              print(f'  {word:18s} {"present" if word.encode() in inner else "MISSING"}')
+          if missing:
+              sys.exit('firmware is missing ' + ', '.join(missing))
+          print('firmware carries the whole payload path')
           PY
       - name: build userdata-root.img
         # `scripts/package.sh` (unixnu release) never runs `unixnu build
@@ -609,7 +599,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installation-seed-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 1
+          retention-days: 30
           path: |
             UniXNU/out/sheng/*/*/runtime/data.dbr
             UniXNU/out/sheng/*/*/runtime/inputs.json
@@ -617,7 +607,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: images-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 1
+          retention-days: 30
           if-no-files-found: error
           path: |
             UniXNU/out/sheng/*/*/boot/boot.img
@@ -628,7 +618,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-${{ inputs.os }}-lane${{ matrix.lane }}
-          retention-days: 1
+          retention-days: 30
           if-no-files-found: warn
           path: |
             UniXNU/out/sheng/*/*/userdata/userdata-root.img

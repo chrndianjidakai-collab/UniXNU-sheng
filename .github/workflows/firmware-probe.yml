@@ -1,0 +1,180 @@
+name: firmware-probe
+
+# Build only the firmware volume and report what landed in it.
+#
+# The 6-lane run spends ~50 minutes reaching the firmware step and then dies
+# there, so every attempt at the sheng UEFI module list costs a full cycle.
+# This probe skips the kernel, prelink, payload and packing entirely: it restores
+# the same build cache, applies the same device patches, runs
+# `unixnu build firmware` and prints the volume size and the protocols it
+# carries. A firmware change is judged in minutes instead of an hour.
+#
+# It also answers the question the full run cannot: whether the modules added to
+# sheng.dsc are actually compiled and placed, or silently skipped.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "OS profile (only its output directory is used)"
+        type: choice
+        options: ["27", "26", "17"]
+        default: "27"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: firmware-only
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9
+          path: UniXNU
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/uefi-sheng
+          path: uefi-sheng
+          submodules: recursive
+      - name: tools
+        run: |
+          brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools bison pkgconf rustup blacktop/tap/ipsw
+          {
+            echo "$HOME/.cargo/bin"
+            echo "/opt/homebrew/opt/llvm/bin"
+            echo "/opt/homebrew/opt/lld/bin"
+            echo "/opt/homebrew/opt/bison/bin"
+          } >> "$GITHUB_PATH"
+          rustup toolchain install 1.98.0 --profile minimal --component rust-src
+      - name: repair the pinned Mesa series
+        working-directory: device
+        run: python3 scripts/repair-mesa-series.py ../UniXNU
+      - name: fetch the Wi-Fi supplicant sources
+        working-directory: device/drivers/Ath12kWifi
+        timeout-minutes: 45
+        run: |
+          python3 ../../scripts/fix-ath12k-sparse-paths.py .
+          python3 ../../scripts/patch-fetch-sources.py .
+          python3 tools/fetch-sources.py
+          python3 tools/fetch-sources.py --check
+      - name: advance the sm8550 kit pin
+        working-directory: device
+        run: python3 scripts/advance-sm8550-kit.py ../UniXNU .
+      - name: stage the proprietary firmware blobs
+        working-directory: device
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/stage-proprietary.py .
+          python3 scripts/stage-proprietary.py . --check
+      - name: patch the fileset reference build
+        working-directory: device
+        run: python3 scripts/patch-fileset-reference.py ../UniXNU
+      - name: advance the XnuPrelink submodule
+        run: |
+          cd UniXNU/kits/XnuPrelink
+          git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
+          git checkout --detach FETCH_HEAD
+      - name: raise the metal bridge cargo timeout
+        working-directory: device
+        run: python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
+      - name: patch the prelink layout
+        working-directory: device
+        run: python3 scripts/patch-prelink-layout.py ../UniXNU
+      - name: patch the prelink dependency closure
+        working-directory: device
+        run: python3 scripts/patch-prelink-closure.py ../UniXNU
+      - name: patch the weak defaults
+        working-directory: device
+        run: python3 scripts/patch-weak-defaults.py ../UniXNU
+      - name: build cache identity
+        id: build-cache
+        working-directory: device
+        run: |
+          key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os }}")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "build cache key: $key"
+      - name: restore the build cache
+        id: build-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            device/deps
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/tree
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/xnu-inputs.json
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/package/Build/Out
+            UniXNU/out/sheng/ipados-27.0.1-24A446/sheng_ipados27/edk2-conf
+            uefi-sheng
+          key: build-${{ steps.build-cache.outputs.key }}
+      - name: report the build cache
+        run: |
+          echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
+      - name: restore the sheng firmware inputs
+        id: firmware-inputs
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            device/.cache/firmware/sheng
+            uefi-sheng/Binaries
+          key: sheng-fw-${{ hashFiles('device/board.toml') }}
+      - name: apply the firmware module and flash-device edits
+        working-directory: device
+        run: |
+          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
+          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
+          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
+          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
+          echo '--- sheng.dsc [Components] tail ---'
+          sed -n '/^\[Components\]/,/^\[LibraryClasses\]/p' ../uefi-sheng/Platforms/Xiaomi/shengPkg/sheng.dsc | grep -E 'DiskIo|Partition|Fat\.inf|EnglishDxe' || echo 'NOT PRESENT'
+          echo '--- sheng.toml [uefi_fd] ---'
+          sed -n '/\[uefi_fd\]/,/^\[/p' ../uefi-sheng/Resources/Configs/sheng.toml
+          rm -rf ../uefi-sheng/Build
+      - name: build the firmware volume
+        id: firmware
+        working-directory: device
+        env:
+          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+        run: |
+          set -o pipefail
+          args=(--os "${{ inputs.os }}" --uefi ../uefi-sheng)
+          ../UniXNU/unixnu build firmware "${args[@]}" 2>&1 | tail -60
+      - name: report the firmware volume
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, os, struct, sys
+          paths = glob.glob('uefi-sheng/Build/shengPkg/*/FV/*.fd')
+          if not paths:
+              print('no .fd produced')
+              sys.exit(0)
+          for path in paths:
+              data = open(path, 'rb').read()
+              print(f'{os.path.basename(path)}: {len(data)} bytes ({len(data)/1048576:.2f} MB)')
+              probes = ('SimpleFileSystem', 'BlockIo', 'LoadImage', 'Fat', 'DiskIo',
+                        'Partition', 'RamDisk', 'DarwinBoot', 'UniXNU')
+              for word in probes:
+                  hit = data.find(word.encode())
+                  print(f'  {word:18s} {"present @" + hex(hit) if hit >= 0 else "MISSING"}')
+          PY
+          du -sh uefi-sheng/Build 2>/dev/null || true
+          ls -la uefi-sheng/Build/shengPkg/*/FV/ 2>/dev/null || true
+      - name: upload the firmware and its log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-probe
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            uefi-sheng/Build/shengPkg/*/FV/*.fd
+            UniXNU/out/sheng/*/*/logs/firmware.log
+            UniXNU/out/sheng/*/*/logs/firmware-preflight.log

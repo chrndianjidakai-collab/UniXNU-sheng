@@ -425,19 +425,25 @@ jobs:
         run: |
           echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
           du -sh device/deps UniXNU/out uefi-sheng 2>/dev/null || true
-      - name: add the payload file-system and loader modules to the firmware
-        # sheng.fdf's FvMain embeds six of the nine modules sheng.dsc compiles,
-        # and it never embeds the UEFI file-system stack at all. The image still
-        # builds and still starts: SEC brings up DxeCore, the boot manager
-        # appears, and every entry answers "no boot" because no block or
-        # file-system protocol ever reaches the payload volume. The device
-        # record states the FDF is supposed to carry these modules, so this
-        # restores the documented image. Run twice for the script's own
-        # idempotency check.
+      - name: compile the payload disk and file-system stack
+        # sheng.fdf's Include/DXE.inc already names the whole payload path —
+        # UniXNURamDiskDxe, DarwinBoot, DiskIoDxe, PartitionDxe, Fat and
+        # EnglishDxe — but sheng.dsc's [Components] listed only the UniXNU and
+        # shengPkg modules. EDK II compiles what the DSC declares and only then
+        # lets the FDF place it, so FvMain carried those INF lines with nothing
+        # behind them: the volume came out at 3.0 MB with SEC, DxeCore and the
+        # UniXNU modules and no block or file-system protocol at all. The boot
+        # manager then listed no usable entry and every selection answered
+        # "no boot".
+        #
+        # The fix goes in the DSC, never in the FDF: the INF lines are already
+        # there, and a duplicate makes GenFv abort with
+        #   "the 23th file and 44th file have the same file GUID".
+        # Run twice for the script's own idempotency check.
         working-directory: device
         run: |
-          python3 scripts/patch-sheng-fdf.py ../uefi-sheng
-          python3 scripts/patch-sheng-fdf.py ../uefi-sheng
+          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
+          python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
       - name: restore the sheng firmware inputs
         # archive (board.toml [firmware.image]), extracts only the porting
         # inputs from it, deletes the archive and generates uefi-sheng/Binaries

@@ -96,16 +96,6 @@ jobs:
       - name: patch the weak defaults
         working-directory: device
         run: python3 scripts/patch-weak-defaults.py ../UniXNU
-      - name: cover the weak imports of every 27 declaring source
-        working-directory: device
-        run: |
-          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-      - name: print the ramdisk handoff decisions on the screen
-        working-directory: device
-        run: |
-          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
-          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
       - name: build cache identity
         id: build-cache
         working-directory: device
@@ -136,6 +126,18 @@ jobs:
             device/.cache/firmware/sheng
             uefi-sheng/Binaries
           key: sheng-fw-${{ hashFiles('device/board.toml') }}
+      - name: cover the weak imports of every 27 declaring source
+        # Must run AFTER restore the build cache: the cache restores the whole
+        # uefi-sheng and tree directories, and would overwrite the edits.
+        working-directory: device
+        run: |
+          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+          python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+      - name: print the ramdisk handoff decisions on the screen
+        working-directory: device
+        run: |
+          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
+          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
       - name: report the firmware module layout
         # No edit belongs here. sheng.dsc and sheng.fdf already carry the whole
         # payload path, and the volume that comes out of them is complete: the

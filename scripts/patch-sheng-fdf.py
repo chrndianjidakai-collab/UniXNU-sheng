@@ -1,93 +1,63 @@
-"""Add the DXE drivers the payload path needs to sheng.fdf's FvMain.
+"""Report where the payload file-system stack actually lives in sheng.fdf.
 
-sheng.dsc compiles nine modules, but sheng.fdf embeds only six of them in
-FV.FvMain. The three it drops plus the UEFI file-system stack are exactly what
-turns the payload volume into a bootable system:
+An earlier revision of this script appended the UEFI disk and FAT stack to
+FV.FvMain. That was wrong twice over: the modules are already there, pulled in
+through !include Include/DXE.inc and Include/APRIORI.inc, and appending them a
+second time made GenFv fail outright:
 
-    UniXNURamDiskDxe   publishes the payload FAT volume as a block device
-    DarwinBoot         loads and starts the XNU kernel from that volume
-    MdeModulePkg DiskIo / Partition / EnglishDxe / Fat  give EFI the block and
-                       file-system protocols those two drivers read through
+    GenFv: ERROR 2000: Invalid parameter
+    the 23th file and 44th file have the same file GUID.
 
-Without them the image still builds and still boots: SEC starts DxeCore, the
-boot manager appears, and every entry answers "no boot" because no
-EFI_SIMPLE_FILE_SYSTEM_PROTOCOL ever reaches the payload volume. That is the
-failure this patch removes; it is a missing-module bug in the FDF, not a
-property of the platform.
-
-The same modules appear in the device record as the firmware contract
-("The firmware DSC and FDF embed UniXNU, UniXNUDxe, DarwinBoot,
-UniXNURamDiskDxe, DiskIoDxe and FAT support"), so this restores the documented
-image rather than inventing a new one.
-
-Idempotent: a second run reports "already patched".
+So this script only reports the layout, and stays in the tree as the record of
+where the stack comes from, so a future change does not add it a third time.
+It performs no change.
 
 Usage:
-    python patch-sheng-fdf.py <uefi-sheng checkout>
+    python report-sheng-fdf.py <uefi-sheng checkout>
 """
 import pathlib
+import re
 import sys
 
 FDF = 'Platforms/Xiaomi/shengPkg/sheng.fdf'
-MARK = 'patch-sheng-fdf: the payload file-system and loader stack'
-
-ANCHOR = """  # IORT DT
-  INF QcomPkg/Drivers/IortDtDxe/IortDtDxe.inf
-"""
-
-ADDED = """  # IORT DT
-  INF QcomPkg/Drivers/IortDtDxe/IortDtDxe.inf
-
-  # patch-sheng-fdf: the payload file-system and loader stack. sheng.dsc
-  # compiles these (and the DSC lists the two UniXNU ones), but FvMain did not
-  # embed them, so the finished image could not mount the payload volume and
-  # answered "no boot" from the boot manager. Order matters: the block and
-  # file-system producers come before the consumers that depend on them.
-  INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
-  INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
-  INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
-  INF FatPkg/EnhancedFatDxe/Fat.inf
-  INF UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
-  INF DarwinBootPkg/Driver/DarwinBoot.inf
-"""
-
-# The FDF also has to list the same modules under [Components]-style DSC
-# consumption for FatPkg and the MdeModulePkg disk drivers: sheng.dsc only
-# names the UniXNU and shengPkg ones today. Add them to the DSC too.
-DSC = 'Platforms/Xiaomi/shengPkg/sheng.dsc'
-DSC_MARK = 'patch-sheng-fdf: disk and FAT components'
-DSC_ANCHOR = """  UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
-"""
-DSC_ADDED = """  UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
-  # patch-sheng-fdf: disk and FAT components the payload path reads through.
-  MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
-  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
-  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
-  FatPkg/EnhancedFatDxe/Fat.inf
-"""
-
-
-def patch(path, mark, anchor, added):
-    text = path.read_text(encoding='utf-8')
-    if mark in text:
-        print(f'{path.name}: already patched')
-        return False
-    if anchor not in text:
-        raise SystemExit(f'{path}: anchor block not found; upstream changed')
-    path.write_text(text.replace(anchor, added, 1), encoding='utf-8')
-    print(f'{path.name}: added the payload file-system and loader modules')
-    return True
+INCLUDES = ('APRIORI.inc', 'DXE.inc', 'RAW.inc')
+NEEDED = ('DiskIoDxe', 'PartitionDxe', 'Fat.inf', 'RamDisk', 'DarwinBoot')
 
 
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()
     fdf = root / FDF
-    dsc = root / DSC
-    for target in (fdf, dsc):
-        if not target.is_file():
-            raise SystemExit(f'{target} missing')
-    patch(fdf, MARK, ANCHOR, ADDED)
-    patch(dsc, DSC_MARK, DSC_ANCHOR, DSC_ADDED)
+    if not fdf.is_file():
+        raise SystemExit(f'{fdf} missing')
+
+    text = fdf.read_text(encoding='utf-8')
+    print('sheng.fdf includes:')
+    for name in re.findall(r'!include\s+(\S+)', text):
+        print(f'  {name}')
+
+    target = fdf.parent / 'Include'
+    found = {}
+    for name in INCLUDES:
+        path = target / name
+        if not path.is_file():
+            continue
+        body = path.read_text(encoding='utf-8')
+        for need in NEEDED:
+            for match in re.finditer(r'^\s*INF\s+(\S*' + re.escape(need) + r'\S*)', body, re.M):
+                found.setdefault(need, []).append(f'{name}: {match.group(1)}')
+
+    print()
+    for need in NEEDED:
+        hits = found.get(need)
+        if hits:
+            print(f'{need:12s} already embedded:')
+            for hit in hits:
+                print(f'  {hit}')
+        else:
+            print(f'{need:12s} NOT in the include files')
+    print()
+    print('The disk/FAT stack is part of these includes; do not add it to FvMain')
+    print('again (a duplicate file GUID makes GenFv fail).')
     return 0
 
 

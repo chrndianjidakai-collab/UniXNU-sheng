@@ -395,21 +395,27 @@ jobs:
           python3 scripts/patch-weak-defaults.py ../UniXNU
       - name: cover the weak imports of every 27 declaring source
         # The 27 patch series adds `extern ... weak_import` declarations to
-        # kernel sources other than BootLog.c (kern_exec.c, bsd_init.c,
-        # IOKitBSDInit.cpp, locks.c). Upstream's weak_defaults() only runs on
-        # BootLog.c, so those declarations reach the arm64e link with no
-        # definition and the kernel fails with nine undefined symbols:
-        #   _native_ram_block_gpu_addon / _volume_seed, _native_source_storage_start,
-        #   _native_verified_block_manifest_sha384 / _root_authorized /
-        #   _volume_device, _sheng_boot_watchdog_policy,
-        #   _iokit_physical_descriptor_close_notify, _ml_static_mfree_prepare.
-        # This patch extends the same call to the declaring sources and adds the
-        # generated files to the archive's source list.
+        # kernel sources other than BootLog.c. Upstream's weak_defaults() only
+        # runs on BootLog.c, so on UniXNU@9931232 the arm64e link fails with
+        # seven undefined symbols. The declaring files live in
+        # .cache/xnu-work where device_source() cannot find them, so this patch
+        # appends explicit zeroed definitions to the storage archive instead.
         # Run twice for the script's own idempotency check.
         working-directory: device
         run: |
           python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
           python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
+      - name: print the ramdisk handoff decisions on the screen
+        # UniXNURamDiskDxe's three failure modes all return silently, and this
+        # board has neither serial output nor the Advanced Logger, so the menu
+        # only shows "no boot entry found". This patch puts a Print() beside
+        # every decision: HOB missing, x0 not a device tree, no initrd in
+        # /chosen, and the success line. The next boot names its blocker on
+        # the screen itself. Run twice for idempotency.
+        working-directory: device
+        run: |
+          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
+          python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
       - name: build cache identity
         # Hosted macOS runners start empty, so `deps` (uefi-sheng submodules,
         # linux/freebsd sources) and the kernel compile repeat from zero every

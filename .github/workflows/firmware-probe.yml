@@ -126,17 +126,25 @@ jobs:
             device/.cache/firmware/sheng
             uefi-sheng/Binaries
           key: sheng-fw-${{ hashFiles('device/board.toml') }}
-      - name: apply the firmware module and flash-device edits
+      - name: apply the firmware module edits
         working-directory: device
         run: |
+          # Only the DSC changes. sheng.fdf's Include/DXE.inc already names the
+          # disk and file-system modules, but EDK II compiles what the DSC
+          # declares, so they had no code behind them.
+          #
+          # The flash device size stays 0x300000. MemoryMapLib.c places
+          #   FD Reserved       0xA7000000 0x100000
+          #   UEFI FD           0xA7100000 0x300000
+          #   UEFI FD Reserved  0xA7400000 0x200000
+          #   Info Blk / MMU PageTables right after
+          # and check-sheng.py refuses any [uefi_fd] size that does not match
+          # that table, so widening the FD would overwrite the structures that
+          # follow it. The FAT stack is a few hundred KB, which fits.
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
-          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
-          echo '--- sheng.dsc [Components] tail ---'
-          sed -n '/^\[Components\]/,/^\[LibraryClasses\]/p' ../uefi-sheng/Platforms/Xiaomi/shengPkg/sheng.dsc | grep -E 'DiskIo|Partition|Fat\.inf|EnglishDxe' || echo 'NOT PRESENT'
-          echo '--- sheng.toml [uefi_fd] ---'
-          sed -n '/\[uefi_fd\]/,/^\[/p' ../uefi-sheng/Resources/Configs/sheng.toml
+          echo '--- sheng.dsc [Components] additions ---'
+          sed -n '/^\[Components\]/,/^\[LibraryClasses\]/p' ../uefi-sheng/Platforms/Xiaomi/shengPkg/sheng.dsc | grep -E 'DiskIo|Partition|Fat|EnglishDxe' || echo 'NOT PRESENT'
           rm -rf ../uefi-sheng/Build
       - name: select the configuration
         # `unixnu release` runs defconfig before any build step; the tree

@@ -1,25 +1,39 @@
-"""Compile the UEFI disk and FAT stack so sheng.fdf can embed it.
+"""Complete the sheng DSC the way the porting guide requires.
 
-sheng.fdf pulls the payload path in through !include Include/DXE.inc, and that
-file names the whole stack:
+The guide's "Required integration" section names six modules that must be
+listed under DSC [Components] (and placed by the FDF), plus the shared
+libraries their drivers consume:
 
-    UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf   publishes the payload
-    DarwinBootPkg/Driver/DarwinBoot.inf                      loads XNU from it
-    MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf       block devices
-    MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf partitions
-    FatPkg/EnhancedFatDxe/Fat.inf                             the file system
-    MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
+    UniXNUPkg/Application/UniXNU/UniXNU.inf
+    UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+    DarwinBootPkg/Driver/DarwinBoot.inf
+    UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
+    MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
+    FatPkg/EnhancedFatDxe/Fat.inf
+  [LibraryClasses]
+    HobLib|MdePkg/Library/DxeHobLib/DxeHobLib.inf
+    FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
 
-sheng.dsc's [Components] section, however, lists only the UniXNU and shengPkg
-modules. EDK II compiles what the DSC declares and only then lets the FDF place
-it, so the four MdeModulePkg/FatPkg entries were never built: FvMain had their
-INF lines and nothing behind them. The finished volume came out at 3.0 MB with
-SEC, DxeCore and the UniXNU modules, no block or file-system protocol at all,
-the boot manager listed no usable entry and every selection answered "no boot".
+sheng.dsc listed the four UniXNU/shengPkg entries but not DiskIoDxe or Fat,
+and its [LibraryClasses] did not map HobLib/FdtLib. sheng.fdf's
+Include/DXE.inc already carries the INF lines, so the FDF needs no edit: the
+modules simply had no compiled body to place. The resulting 3.0 MB volume held
+SEC, DxeCore and the UniXNU modules, no block or file-system protocol, the menu
+listed nothing, and every selection answered "no boot" — exactly the state the
+guide's payload-discovery checklist starts from.
 
-This adds those four modules to [Components]. It must not touch sheng.fdf: the
-INF lines are already there and a second copy makes GenFv abort on a duplicate
-file GUID, which is how the first attempt at this fix failed.
+PartitionDxe is deliberately absent: it is only needed when the payload uses a
+partition table, and this payload is a raw FAT volume.
+
+The flash device size is NOT touched. MemoryMapLib.c maps
+    FD Reserved       0xA7000000 0x00100000
+    UEFI FD           0xA7100000 0x00300000
+    UEFI FD Reserved  0xA7400000 0x00200000
+    Info Blk / MMU PageTables immediately after
+and check-sheng.py refuses any [uefi_fd] size that disagrees with that table.
+The FAT stack is a few hundred KB and the guide says a supplied .fd must match
+the board's base and size, so the volume grows inside 0x300000 or the build
+fails on space — which is the signal to trim something else instead.
 
 Idempotent.
 
@@ -30,26 +44,41 @@ import pathlib
 import sys
 
 DSC = 'Platforms/Xiaomi/shengPkg/sheng.dsc'
-MARK = 'patch-sheng-dsc-components: the payload disk and file-system stack'
+COMP_MARK = 'patch-sheng-dsc-components: disk and FAT modules'
+LIB_MARK = 'patch-sheng-dsc-components: libraries for the disk and FAT modules'
 
-ANCHOR = """  UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
-  shengPkg/Drivers/ShengKeyInputDxe/ShengKeyInputDxe.inf
-  DarwinBootPkg/Driver/DarwinBoot.inf
+COMP_ANCHOR = """  DarwinBootPkg/Driver/DarwinBoot.inf
 """
 
-ADDED = """  UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf
-  shengPkg/Drivers/ShengKeyInputDxe/ShengKeyInputDxe.inf
-  DarwinBootPkg/Driver/DarwinBoot.inf
-  # patch-sheng-dsc-components: the payload disk and file-system stack.
-  # sheng.fdf's Include/DXE.inc already places these modules in FvMain, but a
-  # module the DSC does not list is never compiled, so FvMain held their INF
-  # names and no code. Without them the volume has no block or file-system
-  # protocol, the payload never mounts, and the boot manager answers
-  # "no boot" for every entry.
+COMP_ADDED = """  DarwinBootPkg/Driver/DarwinBoot.inf
+  # patch-sheng-dsc-components: disk and FAT modules. sheng.fdf's
+  # Include/DXE.inc already places them in the firmware volume, but EDK II
+  # compiles only what the DSC lists, so the INF lines had no code behind them
+  # and the finished volume carried no block or file-system protocol.
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
-  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
-  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   FatPkg/EnhancedFatDxe/Fat.inf
+  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
+"""
+
+# HobLib/FdtLib are what UniXNURamDiskDxe reads the handoff FDT through; they
+# belong in [LibraryClasses] as a DXE mapping. Anchor on the existing DXE
+# library block so the insertion order stays valid.
+LIB_ANCHOR = """[LibraryClasses]
+
+  #
+  # DXE phase
+  #
+"""
+
+LIB_ADDED = """[LibraryClasses]
+
+  #
+  # DXE phase
+  #
+
+  # patch-sheng-dsc-components: libraries for the disk and FAT modules.
+  HobLib|MdePkg/Library/DxeHobLib/DxeHobLib.inf
+  FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
 """
 
 
@@ -59,15 +88,42 @@ def main():
     if not dsc.is_file():
         raise SystemExit(f'{dsc} missing')
     text = dsc.read_text(encoding='utf-8')
+    changed = False
 
-    if MARK in text:
+    if COMP_MARK not in text:
+        if COMP_ANCHOR not in text:
+            raise SystemExit(f'{DSC}: [Components] anchor not found; upstream changed')
+        text = text.replace(COMP_ANCHOR, COMP_ADDED, 1)
+        print(f'{DSC}: added DiskIoDxe, Fat and EnglishDxe to [Components]')
+        changed = True
+
+    if LIB_MARK not in text:
+        # Only add a mapping the DSC does not already carry. sheng.dsc defines
+        # FdtLib in a later [LibraryClasses] block, and a duplicate definition
+        # for the same arch and module type is what EDK II rejects.
+        additions = []
+        if 'HobLib|' not in text:
+            additions.append('  HobLib|MdePkg/Library/DxeHobLib/DxeHobLib.inf')
+        if 'FdtLib|' not in text:
+            additions.append('  FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf')
+        if additions:
+            index = text.find('[LibraryClasses]\n')
+            if index < 0:
+                raise SystemExit(f'{DSC}: no [LibraryClasses] section; upstream changed')
+            insert = index + len('[LibraryClasses]\n')
+            block = ('\n  # patch-sheng-dsc-components: libraries for the disk and FAT modules.\n'
+                     + '\n'.join(additions) + '\n')
+            text = text[:insert] + block + text[insert:]
+            print(f'{DSC}: mapped {len(additions)} library class(es) in [LibraryClasses]')
+            changed = True
+        else:
+            print(f'{DSC}: HobLib and FdtLib already mapped')
+
+    if not changed:
         print(f'{DSC}: already patched')
         return 0
-    if ANCHOR not in text:
-        raise SystemExit(f'{DSC}: anchor block not found; upstream changed')
 
-    dsc.write_text(text.replace(ANCHOR, ADDED, 1), encoding='utf-8')
-    print(f'{DSC}: added the disk and file-system modules to [Components]')
+    dsc.write_text(text, encoding='utf-8')
     return 0
 
 

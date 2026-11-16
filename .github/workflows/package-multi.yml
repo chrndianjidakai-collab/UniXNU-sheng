@@ -461,8 +461,6 @@ jobs:
           # Run each twice for its own idempotency check.
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
           python3 scripts/patch-sheng-dsc-components.py ../uefi-sheng
-          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
-          python3 scripts/patch-sheng-fd-size.py ../uefi-sheng
           # The build cache restores the whole uefi-sheng checkout, Build/
           # included. EDK II treats that directory as its incremental state and
           # would reuse the module set recorded before these edits, so the new

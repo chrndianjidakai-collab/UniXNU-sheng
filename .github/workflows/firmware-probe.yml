@@ -34,88 +34,30 @@ jobs:
         repository: UniXNU/uefi-sheng
         path: uefi-sheng
         submodules: recursive
+    - uses: actions/checkout@v4
+      with:
+        path: tooling
     - name: target this unit's partition layout
-      # Upstream board.toml carries the 256G-class SKU LBA range (3094592..64007162).
-      # This unit is the 1 TB SKU: the dual-system split created unixnu at
-      # 184345344..257745663 (280 GiB), which UniXNU owns, and moved userdata to
-      # 3094784..184345343. The build refuses a layout that does not match the
-      # GPT, so those two numbers are rewritten here rather than shipping a
-      # forked board.toml.
       working-directory: device
-      run: |
-        python3 - <<'PY'
-        import pathlib, re
-        first, last = 184345344, 257745663
-        path = pathlib.Path('board.toml')
-        text = path.read_text(encoding='utf-8')
-        if not re.search(r'^"first_lba" = %d$' % first, text, re.M):
-            text, n1 = re.subn(r'^"first_lba" = \d+$', '"first_lba" = %d' % first, text, count=1, flags=re.M)
-            text, n2 = re.subn(r'^"last_lba" = \d+$', '"last_lba" = %d' % last, text, count=1, flags=re.M)
-            if n1 != 1 or n2 != 1:
-                raise SystemExit('could not rewrite the userdata LBAs')
-            path.write_text(text, encoding='utf-8')
-        print('userdata %d..%d (1 TB SKU, unixnu 280 GiB)' % (first, last))
-        PY
+      run: "python3 - <<'PY'\nimport pathlib, re\nfirst, last = 184345344, 257745663\n\
+        path = pathlib.Path('board.toml')\ntext = path.read_text(encoding='utf-8')\n\
+        if not re.search(r'^\"first_lba\" = %d$' % first, text, re.M):\n    text,\
+        \ n1 = re.subn(r'^\"first_lba\" = \\d+$', '\"first_lba\" = %d' % first, text,\
+        \ count=1, flags=re.M)\n    text, n2 = re.subn(r'^\"last_lba\" = \\d+$', '\"\
+        last_lba\" = %d' % last, text, count=1, flags=re.M)\n    if n1 != 1 or n2\
+        \ != 1:\n        raise SystemExit('could not rewrite the userdata LBAs')\n\
+        \    path.write_text(text, encoding='utf-8')\nprint('userdata %d..%d (1 TB\
+        \ SKU, unixnu 280 GiB)' % (first, last))\nPY\n"
     - name: tools
       run: "brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools\
         \ bison pkgconf rustup blacktop/tap/ipsw\n{\n  echo \"$HOME/.cargo/bin\"\n\
         \  echo \"/opt/homebrew/opt/llvm/bin\"\n  echo \"/opt/homebrew/opt/lld/bin\"\
         \n  echo \"/opt/homebrew/opt/bison/bin\"\n} >> \"$GITHUB_PATH\"\nrustup toolchain\
         \ install 1.98.0 --profile minimal --component rust-src\n"
-    - name: repair the pinned Mesa series
-      working-directory: device
-      run: python3 scripts/repair-mesa-series.py ../UniXNU
-    - name: fetch the Wi-Fi supplicant sources
-      working-directory: device/drivers/Ath12kWifi
-      timeout-minutes: 45
-      run: 'python3 ../../scripts/fix-ath12k-sparse-paths.py .
-
-        python3 ../../scripts/patch-fetch-sources.py .
-
-        python3 tools/fetch-sources.py
-
-        python3 tools/fetch-sources.py --check
-
-        '
-    - name: advance the sm8550 kit pin
-      working-directory: device
-      run: python3 scripts/advance-sm8550-kit.py ../UniXNU .
-    - name: stage the proprietary firmware blobs
-      working-directory: device
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      run: 'python3 scripts/stage-proprietary.py .
-
-        python3 scripts/stage-proprietary.py . --check
-
-        '
-    - name: patch the fileset reference build
-      working-directory: device
-      run: python3 scripts/patch-fileset-reference.py ../UniXNU
-    - name: advance the XnuPrelink submodule
-      run: 'cd UniXNU/kits/XnuPrelink
-
-        git fetch --depth 1 origin 440589b0c31625f17edf363e24b3c82c51c70bb9
-
-        git checkout --detach FETCH_HEAD
-
-        '
-    - name: raise the metal bridge cargo timeout
-      working-directory: device
-      run: python3 scripts/patch-metal-bridge-timeout.py ../UniXNU
-    - name: patch the prelink layout
-      working-directory: device
-      run: python3 scripts/patch-prelink-layout.py ../UniXNU
-    - name: patch the prelink dependency closure
-      working-directory: device
-      run: python3 scripts/patch-prelink-closure.py ../UniXNU
-    - name: patch the weak defaults
-      working-directory: device
-      run: python3 scripts/patch-weak-defaults.py ../UniXNU
     - name: build cache identity
       id: build-cache
       working-directory: device
-      run: 'key=$(python3 scripts/build-cache-key.py . ../UniXNU --os "${{ inputs.os
+      run: 'key=$(python3 ../tooling/build-cache-key.py . ../UniXNU --os "${{ inputs.os
         }}")
 
         echo "key=$key" >> "$GITHUB_OUTPUT"

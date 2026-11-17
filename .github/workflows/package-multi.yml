@@ -1,5 +1,5 @@
 name: package-6lane
-true:
+on:
   workflow_dispatch:
     inputs:
       os:
@@ -49,12 +49,13 @@ jobs:
         '
     - uses: actions/checkout@v4
       with:
+        repository: UniXNU/UniXNU-sheng
         path: device
         submodules: recursive
     - uses: actions/checkout@v4
       with:
         repository: UniXNU/UniXNU
-        ref: 9931232fd68b8ae1db0abd957ecba417f1996e52
+        ref: 82b847c4ac3f68a57024b3082ffa3a03442defd9
         path: UniXNU
         submodules: recursive
     - uses: actions/checkout@v4
@@ -62,6 +63,28 @@ jobs:
         repository: UniXNU/uefi-sheng
         path: uefi-sheng
         submodules: recursive
+    - name: target this unit's partition layout
+      # Upstream board.toml carries the 256G-class SKU LBA range (3094592..64007162).
+      # This unit is the 1 TB SKU: the dual-system split created unixnu at
+      # 184345344..257745663 (280 GiB), which UniXNU owns, and moved userdata to
+      # 3094784..184345343. The build refuses a layout that does not match the
+      # GPT, so those two numbers are rewritten here rather than shipping a
+      # forked board.toml.
+      working-directory: device
+      run: |
+        python3 - <<'PY'
+        import pathlib, re
+        first, last = 184345344, 257745663
+        path = pathlib.Path('board.toml')
+        text = path.read_text(encoding='utf-8')
+        if not re.search(r'^"first_lba" = %d$' % first, text, re.M):
+            text, n1 = re.subn(r'^"first_lba" = \d+$', '"first_lba" = %d' % first, text, count=1, flags=re.M)
+            text, n2 = re.subn(r'^"last_lba" = \d+$', '"last_lba" = %d' % last, text, count=1, flags=re.M)
+            if n1 != 1 or n2 != 1:
+                raise SystemExit('could not rewrite the userdata LBAs')
+            path.write_text(text, encoding='utf-8')
+        print('userdata %d..%d (1 TB SKU, unixnu 280 GiB)' % (first, last))
+        PY
     - name: tools
       run: "brew install dtc llvm lld cmake mtools ninja glslang shaderc spirv-tools\
         \ bison pkgconf rustup blacktop/tap/ipsw\n{\n  echo \"$HOME/.cargo/bin\"\n\
@@ -335,20 +358,6 @@ jobs:
 
           '
         key: build-${{ steps.build-cache.outputs.key }}
-    - name: print the ramdisk handoff decisions on the screen
-      working-directory: device
-      run: 'python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
-
-        python3 scripts/patch-ramdisk-screen-log.py ../UniXNU
-
-        '
-    - name: cover the weak imports of every 27 declaring source
-      working-directory: device
-      run: 'python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-
-        python3 scripts/patch-sheng-weak-coverage.py ../UniXNU
-
-        '
     - name: report the build cache
       run: 'echo "cache hit: ${{ steps.build-cache-restore.outputs.cache-hit }}"
 
